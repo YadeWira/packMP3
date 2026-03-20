@@ -309,16 +309,15 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 	global variables: info about program
 	----------------------------------------------- */
 
-INTERN const unsigned char appversion = 10;
-INTERN const char*  subversion   = "g";
+INTERN const unsigned char appversion = 11;
+INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "01/22/2016";
-INTERN const char*  author       = "Matthias Stirner";
+INTERN const char*  versiondate  = "03/19/2026";
+INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
-INTERN const char*  website      = "http://packjpg.encode.ru/";
-INTERN const char*  email        = "packjpg (at) matthiasstirner.com";
-INTERN const char*	copyright    = "2010-2016 Ratisbon University & Matthias Stirner";
+INTERN const char*  website      = "https://github.com/YadeWira/packMP3";
+INTERN const char*	copyright    = "2010-2026 Yade Bravo & Matthias Stirner";
 INTERN const char*  pmp_ext      = "pmp";
 INTERN const char*  mp3_ext      = "mp3";
 #endif
@@ -332,7 +331,7 @@ INTERN const char   pmp_magic[] = { 'M', 'S' };
 #if !defined(BUILD_LIB)
 int main( int argc, char** argv )
 {	
-	sprintf( errormessage, "no errormessage specified" );
+	snprintf( errormessage, MSG_SIZE, "no errormessage specified" );
 	
 	clock_t begin, end;
 	
@@ -507,8 +506,8 @@ EXPORT bool pmplib_convert_stream2mem( unsigned char** out_file, unsigned int* o
 	}
 	
 	// close iostreams
-	if ( str_in  != NULL ) delete( str_in  ); str_in  = NULL;
-	if ( str_out != NULL ) delete( str_out ); str_out = NULL;
+	if ( str_in  != NULL ) { delete( str_in  ); str_in  = NULL; }
+	if ( str_out != NULL ) { delete( str_out ); str_out = NULL; }
 	
 	end = clock();
 	
@@ -534,15 +533,15 @@ EXPORT bool pmplib_convert_stream2mem( unsigned char** out_file, unsigned int* o
 		switch( filetype )
 		{
 			case F_MP3:
-				sprintf( msg, "Compressed to %s (%.2f%%) in %ims",
+				snprintf( msg, MSG_SIZE, "Compressed to %s (%.2f%%) in %ims",
 					pmpfilename, cr, ( total >= 0 ) ? total : -1 );
 				break;
 			case F_PMP:
-				sprintf( msg, "Decompressed to %s (%.2f%%) in %ims",
+				snprintf( msg, MSG_SIZE, "Decompressed to %s (%.2f%%) in %ims",
 					mp3filename, cr, ( total >= 0 ) ? total : -1 );
 				break;
 			case F_UNK:
-				sprintf( msg, "Unknown filetype" );
+				snprintf( msg, MSG_SIZE, "Unknown filetype" );
 				break;	
 		}
 	}
@@ -594,7 +593,7 @@ EXPORT void pmplib_init_streams( void* in_src, int in_type, int in_size, void* o
 	// open input stream, check for errors
 	str_in = new iostream( in_src, in_type, in_size, 0 );
 	if ( str_in->chkerr() ) {
-		sprintf( errormessage, "error opening input stream" );
+		snprintf( errormessage, MSG_SIZE, "error opening input stream" );
 		errorlevel = 2;
 		return;
 	}	
@@ -602,14 +601,14 @@ EXPORT void pmplib_init_streams( void* in_src, int in_type, int in_size, void* o
 	// open output stream, check for errors
 	str_out = new iostream( out_dest, out_type, 0, 1 );
 	if ( str_out->chkerr() ) {
-		sprintf( errormessage, "error opening output stream" );
+		snprintf( errormessage, MSG_SIZE, "error opening output stream" );
 		errorlevel = 2;
 		return;
 	}
 	
 	// free memory from filenames if needed
-	if ( mp3filename != NULL ) free( mp3filename ); mp3filename = NULL;
-	if ( pmpfilename != NULL ) free( pmpfilename ); pmpfilename = NULL;
+	if ( mp3filename != NULL ) { free( mp3filename ); mp3filename = NULL; }
+	if ( pmpfilename != NULL ) { free( pmpfilename ); pmpfilename = NULL; }
 	
 	// check input stream
 	str_in->read( buffer, 1, 2 );
@@ -618,18 +617,22 @@ EXPORT void pmplib_init_streams( void* in_src, int in_type, int in_size, void* o
 		// file is PMP
 		filetype = F_PMP;
 		// copy filenames
-		pmpfilename = (char*) calloc( (  in_type == 0 ) ? strlen( (char*) in_src   ) + 1 : 32, sizeof( char ) );
-		mp3filename = (char*) calloc( ( out_type == 0 ) ? strlen( (char*) out_dest ) + 1 : 32, sizeof( char ) );
-		strcpy( pmpfilename, (  in_type == 0 ) ? (char*) in_src   : "PMP in memory" );
-		strcpy( mp3filename, ( out_type == 0 ) ? (char*) out_dest : "MP3 in memory" );
+		const char* _in_name  = ( in_type  == 0 ) ? static_cast<const char*>( in_src )  : "PMP in memory";
+		const char* _out_name = ( out_type == 0 ) ? static_cast<const char*>( out_dest ) : "MP3 in memory";
+		pmpfilename = (char*) calloc( strlen( _in_name  ) + 1, sizeof( char ) );
+		mp3filename = (char*) calloc( strlen( _out_name ) + 1, sizeof( char ) );
+		strcpy( pmpfilename, _in_name  );
+		strcpy( mp3filename, _out_name );
 	} else {
 		// file is MP3
 		filetype = F_MP3;
 		// copy filenames
-		mp3filename = (char*) calloc( (  in_type == 0 ) ? strlen( (char*) in_src   ) + 1 : 32, sizeof( char ) );
-		pmpfilename = (char*) calloc( ( out_type == 0 ) ? strlen( (char*) out_dest ) + 1 : 32, sizeof( char ) );
-		strcpy( mp3filename, (  in_type == 0 ) ? (char*) in_src   : "MP3 in memory" );
-		strcpy( pmpfilename, ( out_type == 0 ) ? (char*) out_dest : "PMP in memory" );
+		const char* _in_name  = ( in_type  == 0 ) ? static_cast<const char*>( in_src )  : "MP3 in memory";
+		const char* _out_name = ( out_type == 0 ) ? static_cast<const char*>( out_dest ) : "PMP in memory";
+		mp3filename = (char*) calloc( strlen( _in_name  ) + 1, sizeof( char ) );
+		pmpfilename = (char*) calloc( strlen( _out_name ) + 1, sizeof( char ) );
+		strcpy( mp3filename, _in_name  );
+		strcpy( pmpfilename, _out_name );
 	}
 	
 	// store types of in-/output
@@ -649,7 +652,7 @@ EXPORT const char* pmplib_version_info( void )
 	static char v_info[ 256 ];
 	
 	// copy version info to string
-	sprintf( v_info, "--> %s library v%i.%i%s (%s) by %s <--",
+	snprintf( v_info, 256, "--> %s library v%i.%i%s (%s) by %s <--",
 			apptitle, appversion / 10, appversion % 10, subversion, versiondate, author );
 			
 	return (const char*) v_info;
@@ -667,7 +670,7 @@ EXPORT const char* pmplib_short_name( void )
 	static char v_name[ 256 ];
 	
 	// copy version info to string
-	sprintf( v_name, "%s v%i.%i%s",
+	snprintf( v_name, 256, "%s v%i.%i%s",
 			apptitle, appversion / 10, appversion % 10, subversion );
 			
 	return (const char*) v_name;
@@ -848,9 +851,9 @@ INTERN void process_ui( void )
 	process_file();
 	
 	// close iostreams
-	if ( str_in  != NULL ) delete( str_in  ); str_in  = NULL;
-	if ( str_out != NULL ) delete( str_out ); str_out = NULL;
-	if ( str_str != NULL ) delete( str_str ); str_str = NULL;
+	if ( str_in  != NULL ) { delete( str_in  ); str_in  = NULL; }
+	if ( str_out != NULL ) { delete( str_out ); str_out = NULL; }
+	if ( str_str != NULL ) { delete( str_str ); str_str = NULL; }
 	// delete if broken or if output not needed
 	if ( ( !pipe_on ) && ( ( errorlevel >= err_tol ) || ( action != A_COMPRESS ) ) ) {
 		if ( filetype == F_MP3 ) {
@@ -1026,8 +1029,7 @@ INTERN inline const char* get_status( bool (*function)() )
 INTERN void show_help( void )
 {	
 	fprintf( msgout, "\n" );
-	fprintf( msgout, "Website: %s\n", website );
-	fprintf( msgout, "Email  : %s\n", email );
+	fprintf( msgout, "GitHub : %s\n", website );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Usage: %s [switches] [filename(s)]", appname );
 	fprintf( msgout, "\n" );
@@ -1278,26 +1280,26 @@ INTERN bool check_file( void )
 	// open input stream, check for errors
 	str_in = new iostream( (void*) filename, ( !pipe_on ) ? 0 : 2, 0, 0 );
 	if ( str_in->chkerr() ) {
-		sprintf( errormessage, FRD_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FRD_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
 	
 	// free memory from filenames if needed
-	if ( mp3filename != NULL ) free( mp3filename ); mp3filename = NULL;
-	if ( pmpfilename != NULL ) free( pmpfilename ); pmpfilename = NULL;
+	if ( mp3filename != NULL ) { free( mp3filename ); mp3filename = NULL; }
+	if ( pmpfilename != NULL ) { free( pmpfilename ); pmpfilename = NULL; }
 	
 	// immediately return error if 2 bytes can't be read
 	if ( str_in->read( fileid, 1, 2 ) != 2 ) { 
 		filetype = F_UNK;
-		sprintf( errormessage, "file doesn't contain enough data" );
+		snprintf( errormessage, MSG_SIZE, "file doesn't contain enough data" );
 		errorlevel = 2;
 		return false;
 	}
 	
 	// rewind (need to start from the beginning)
 	if ( str_in->rewind() != 0 ) {
-		sprintf( errormessage, FRD_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FRD_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -1321,7 +1323,7 @@ INTERN bool check_file( void )
 		// open output stream, check for errors
 		str_out = new iostream( (void*) mp3filename, ( !pipe_on ) ? 0 : 2, 0, 1 );
 		if ( str_out->chkerr() ) {
-			sprintf( errormessage, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -1344,7 +1346,7 @@ INTERN bool check_file( void )
 		// open output stream, check for errors
 		str_out = new iostream( (void*) pmpfilename, ( !pipe_on ) ? 0 : 2, 0, 1 );
 		if ( str_out->chkerr() ) {
-			sprintf( errormessage, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -1374,7 +1376,7 @@ INTERN bool swap_streams( void )
 	// open new stream for output / check for errors
 	str_out = new iostream( NULL, 1, 0, 1 );
 	if ( str_out->chkerr() ) {
-		sprintf( errormessage, "error opening comparison stream" );
+		snprintf( errormessage, MSG_SIZE, "error opening comparison stream" );
 		errorlevel = 2;
 		return false;
 	}
@@ -1405,7 +1407,7 @@ INTERN bool compare_output( void )
 	if ( ( buff_ori == NULL ) || ( buff_cmp == NULL ) ) {
 		if ( buff_ori != NULL ) free( buff_ori );
 		if ( buff_cmp != NULL ) free( buff_cmp );
-		sprintf( errormessage, MEM_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -1414,11 +1416,11 @@ INTERN bool compare_output( void )
 	str_out->switch_mode();
 	while ( true ) {
 		if ( str_out->chkerr() )
-			sprintf( errormessage, "error in comparison stream" );
+			snprintf( errormessage, MSG_SIZE, "error in comparison stream" );
 		else if ( str_in->chkerr() )
-			sprintf( errormessage, "error in output stream" );
+			snprintf( errormessage, MSG_SIZE, "error in output stream" );
 		else if ( str_str->chkerr() )
-			sprintf( errormessage, "error in input stream" );
+			snprintf( errormessage, MSG_SIZE, "error in input stream" );
 		else break;
 		errorlevel = 2;
 		return false;
@@ -1427,7 +1429,7 @@ INTERN bool compare_output( void )
 	// compare sizes
 	dsize = str_str->getsize();
 	if ( str_out->getsize() != dsize ) {
-		sprintf( errormessage, "file sizes do not match" );
+		snprintf( errormessage, MSG_SIZE, "file sizes do not match" );
 		errorlevel = 2;
 		return false;
 	}
@@ -1440,7 +1442,7 @@ INTERN bool compare_output( void )
 			str_out->read( buff_cmp, sizeof( char ), bsize );
 		}
 		if ( buff_ori[ b ] != buff_cmp[ b ] ) {
-			sprintf( errormessage, "difference found at 0x%X", i );
+			snprintf( errormessage, MSG_SIZE, "difference found at 0x%X", i );
 			errorlevel = 2;
 			return false;
 		}
@@ -1566,7 +1568,7 @@ INTERN bool read_mp3( void )
 	mp3data = (unsigned char*) calloc( mp3filesize + 1, sizeof( char ) );
 	if ( ( mp3data == NULL ) || ( mp3filesize <= 0 ) ) {
 		if ( mp3data != NULL ) free( mp3data );
-		sprintf( errormessage, MEM_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -1575,7 +1577,7 @@ INTERN bool read_mp3( void )
 	// find first proper mpeg audio frame
 	pos = mp3_seek_firstframe( mp3data, mp3filesize );
 	if ( pos == -1 ) {
-		sprintf( errormessage, "no mpeg audio data recognized" );
+		snprintf( errormessage, MSG_SIZE, "no mpeg audio data recognized" );
 		errorlevel = 2;
 		free( mp3data );
 		return false;
@@ -1586,7 +1588,7 @@ INTERN bool read_mp3( void )
 	if ( mp3filesize - pos >= 2 ) {
 		type = MBITS( mp3data[pos+1], 5, 1 );
 		if ( type != MPEG1_LAYER_III ) {
-			sprintf( errormessage, "file is %s, not supported", filetype_description[type] );
+			snprintf( errormessage, MSG_SIZE, "file is %s, not supported", filetype_description[type] );
 			errorlevel = 2;
 			free( mp3data );
 			return false;
@@ -1599,7 +1601,7 @@ INTERN bool read_mp3( void )
 		mp3filesize = str_in->getsize(); // check size of file again
 		mp3data = (unsigned char*) frealloc( mp3data, mp3filesize * sizeof( char ) );
 		if ( mp3data == NULL ) {
-			sprintf( errormessage, MEM_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -1615,7 +1617,8 @@ INTERN bool read_mp3( void )
 		if ( frame == NULL ) {
 			if ( errorlevel == 2 ) {
 				// append some useful info to the existing error message
-				sprintf( errormessage + strlen( errormessage ), " (frame #%i at 0x%X)",
+				size_t _emlen = strlen( errormessage );
+				snprintf( errormessage + _emlen, MSG_SIZE - _emlen, " (frame #%i at 0x%X)",
 					( lastframe != NULL ) ? lastframe->n + 1 : 0, pos );
 				free( mp3data );
 				delete( data_writer );
@@ -1672,7 +1675,7 @@ INTERN bool read_mp3( void )
 	
 	// check number of proper frames (must be at least 5)
 	if ( lastframe->n + 1 - n_bad_first < 5  ) {
-		sprintf( errormessage, "corrupted file, compression not possible" );
+		snprintf( errormessage, MSG_SIZE, "corrupted file, compression not possible" );
 		errorlevel = 2;
 		return false;
 	}
@@ -1685,12 +1688,12 @@ INTERN bool read_mp3( void )
 		if ( main_data_end + mp3_get_id3_size( mp3data+main_data_end, mp3filesize-main_data_end ) != mp3filesize ) {
 			// allow for a tolerance of 64K unidentified garbage data at EOF
 			if ( mp3filesize - main_data_end > GARBAGE_TOLERANCE ) {
-				sprintf( errormessage, "synching failure (frame #%i at 0x%X)", lastframe->n + 1, pos );
+				snprintf( errormessage, MSG_SIZE, "synching failure (frame #%i at 0x%X)", lastframe->n + 1, pos );
 				errorlevel = 2;
 				free( mp3data );
 				return false;
 			}/* else { // (!!!) strict mode?
-				sprintf( errormessage, "%i byte of unidentified garbage after EOF", mp3filesize - main_data_end );
+				snprintf( errormessage, MSG_SIZE, "%i byte of unidentified garbage after EOF", mp3filesize - main_data_end );
 				errorlevel = 1;
 			}*/
 		}
@@ -1702,7 +1705,7 @@ INTERN bool read_mp3( void )
 	if ( data_after_size > 0 ) {
 		data_after = (unsigned char*) calloc( data_after_size, sizeof( char ) );
 		if ( ( mp3data == NULL ) || ( mp3filesize <= 0 ) ) {
-			sprintf( errormessage, MEM_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -1745,7 +1748,7 @@ INTERN bool write_mp3( void )
 	
 	// errormessage if write error
 	if ( str_out->chkerr() ) {
-		sprintf( errormessage, "write error, possibly drive is full" );
+		snprintf( errormessage, MSG_SIZE, "write error, possibly drive is full" );
 		errorlevel = 2;		
 		return false;
 	}
@@ -1890,44 +1893,44 @@ INTERN bool compress_mp3( void )
 	
 	// unsupported stuff -> not recoverable
 	if ( i_protection == -1 ) { // inconsistent use of checksums
-		sprintf( errormessage, "inconsistent use of checksums, not supported" );
+		snprintf( errormessage, MSG_SIZE, "inconsistent use of checksums, not supported" );
 		errorlevel = 2;
 		return false;
 	}
 	if ( i_stereo_int == -1 ) { // inconsistent use of intensity stereo
-		sprintf( errormessage, "inconsistent use of int stereo, not supported" );
+		snprintf( errormessage, MSG_SIZE, "inconsistent use of int stereo, not supported" );
 		errorlevel = 2;
 		return false;
 	}
 	if ( i_emphasis == -1 ) { // inconsistent use of emphasis
-		sprintf( errormessage, "inconsistent use of emphasis, not supported" );
+		snprintf( errormessage, MSG_SIZE, "inconsistent use of emphasis, not supported" );
 		errorlevel = 2;
 		return false;
 	}
 	if ( i_mixed != 0x0 ) { // mixed blocks
-		sprintf( errormessage, "mixed blocks used, not supported" );
+		snprintf( errormessage, MSG_SIZE, "mixed blocks used, not supported" );
 		errorlevel = 2;
 		return false;
 	}
 	
 	// inconsistencies -> recoverable
 	if ( i_privbit == -1 ) { // inconsistent private bit -> steganograhy?
-		sprintf( errormessage, "inconsistent private bit" );
+		snprintf( errormessage, MSG_SIZE, "inconsistent private bit" );
 		errorlevel = 1;
 		i_privbit = 0;
 	}
 	if ( i_copyright == -1 ) { // inconsistent copyright bit -> steganograhy?
-		sprintf( errormessage, "inconsistent copyright bit" );
+		snprintf( errormessage, MSG_SIZE, "inconsistent copyright bit" );
 		errorlevel = 1;
 		i_copyright = 0;
 	}
 	if ( i_original == -1 ) { // inconsistent original bit -> steganograhy?
-		sprintf( errormessage, "inconsistent original bit" );
+		snprintf( errormessage, MSG_SIZE, "inconsistent original bit" );
 		errorlevel = 1;
 		i_original = 1;
 	}
 	if ( i_padbits != 0 ) { // non-zero padbits -> steganograhy?
-		sprintf( errormessage, "non-zero padbits found" );
+		snprintf( errormessage, MSG_SIZE, "non-zero padbits found" );
 		errorlevel = 1;
 		i_padbits = 0;
 	}
@@ -2014,7 +2017,7 @@ INTERN bool compress_mp3( void )
 	
 	// errormessage if write error
 	if ( str_out->chkerr() ) {
-		sprintf( errormessage, "write error, possibly drive is full" );
+		snprintf( errormessage, MSG_SIZE, "write error, possibly drive is full" );
 		errorlevel = 2;		
 		return false;
 	}
@@ -2048,7 +2051,7 @@ INTERN bool uncompress_pmp( void )
 	str_in->read( &hcode, 1, 1 );
 	// compare version number
 	if ( hcode != appversion ) {
-		sprintf( errormessage, "incompatible file, use %s v%i.%i",
+		snprintf( errormessage, MSG_SIZE, "incompatible file, use %s v%i.%i",
 			appname, hcode / 10, hcode % 10 );
 		errorlevel = 2;
 		return false;
@@ -2180,7 +2183,7 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 	// alloc memory for frame
 	frame = (mp3Frame*) calloc( 1, sizeof( mp3Frame ) );
 	if ( frame == NULL ) {
-		sprintf( errormessage, MEM_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return NULL;
 	}
@@ -2242,7 +2245,7 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 	frame->fixed_size = 4 + nsb + (frame->protection ? 2 : 0);
 	// check if enough data is available
 	if ( frame->fixed_size > max_size ) {
-		free( frame );
+		mp3_discard_frame( frame );
 		return NULL;
 	}
 	// --- ...and optional crc checksum ---
@@ -2251,7 +2254,7 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 		// if there is a crc: check and discard
 		crc = (data[4]<<8) + (data[5]<<0);
 		if ( crc != mp3_calc_layer3_crc( header, sideinfo, nsb ) ) {
-			sprintf( errormessage, "crc checksum mismatch" );
+			snprintf( errormessage, MSG_SIZE, "crc checksum mismatch" );
 			errorlevel = 1; // (!!!) careful - file might be broken
 		}
 	}
@@ -2280,15 +2283,17 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 				granule->region0_size = (char) side_reader->read( 4 );
 				granule->region1_size = (char) side_reader->read( 3 );
 				if ( granule->region0_size+granule->region1_size > 20 ) {
-					sprintf( errormessage, "region size out of bounds" );
+					snprintf( errormessage, MSG_SIZE, "region size out of bounds" );
 					errorlevel = 2;
+					delete( side_reader );
+					mp3_discard_frame( frame );
 					return NULL;
 				}
 				granule->region_bound[0] =
 					mp3_bandwidth_bounds[(int)frame->samples][(int)granule->region0_size+1];
 				granule->region_bound[1] =
 					mp3_bandwidth_bounds[(int)frame->samples][(int)granule->region0_size+granule->region1_size+2];
-				granule->region_bound[2] = granule->big_val_pairs << 1;
+				granule->region_bound[2] = CLAMPED( 0, 576, granule->big_val_pairs << 1 );
 				if ( granule->region_bound[0] > granule->region_bound[2] ) {
 					granule->region_bound[0] = granule->region_bound[2];
 					granule->region_bound[1] = granule->region_bound[2];
@@ -2319,7 +2324,7 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 					granule->region_bound[0] =
 						mp3_bandwidth_bounds_short[(int)frame->samples][9/3] * 3;
 				}
-				granule->region_bound[1] = granule->big_val_pairs << 1;
+				granule->region_bound[1] = CLAMPED( 0, 576, granule->big_val_pairs << 1 );
 				if ( granule->region_bound[0] > granule->region_bound[1] )
 					granule->region_bound[0] = granule->region_bound[1];
 				granule->region_bound[2] = granule->region_bound[1];
@@ -2371,7 +2376,7 @@ INTERN inline mp3Frame* mp3_build_frame( void )
 	// alloc memory for frame
 	frame = (mp3Frame*) calloc( 1, sizeof( mp3Frame ) );
 	if ( frame == NULL ) {
-		sprintf( errormessage, MEM_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return NULL;
 	}
@@ -2532,7 +2537,7 @@ INTERN inline bool mp3_mute_frame( mp3Frame* frame )
 	unmute_data = (unsigned char*) // realloc for new size
 		frealloc( unmute_data, ( unmute_data_size + ums ) * sizeof( char ) );
 	if ( unmute_data == NULL ) {
-		sprintf( errormessage, MEM_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -3127,7 +3132,7 @@ INTERN inline bool pmp_read_header( iostream* str )
 	str->read( (void*) header, 1, 4 );
 	str->read( (void*) nframes, 1, 4 );
 	if ( str->chkeof() ) {
-		sprintf( errormessage, "unexpected end of data" );
+		snprintf( errormessage, MSG_SIZE, "unexpected end of data" );
 		errorlevel = 2;
 		return false;
 	}
@@ -3173,7 +3178,7 @@ INTERN inline bool pmp_read_header( iostream* str )
 	
 	// check for possible mistakes made by myself
 	if ( ( i_bitrate == 0xF ) || ( i_samplerate == 0x3 ) ) {
-		sprintf( errormessage, "not a proper PMP file" );
+		snprintf( errormessage, MSG_SIZE, "not a proper PMP file" );
 		errorlevel = 2;
 		return false;
 	}
@@ -3265,7 +3270,7 @@ INTERN bool pmp_decode_id3( aricoder* dec )
 		// check for out of memory
 		if ( bwrt->error ) {
 			delete bwrt; delete model;
-			sprintf( errormessage, MEM_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -3286,7 +3291,7 @@ INTERN bool pmp_decode_id3( aricoder* dec )
 		// check for out of memory
 		if ( bwrt->error ) {
 			delete bwrt; delete model;
-			sprintf( errormessage, MEM_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -3345,7 +3350,7 @@ INTERN inline int pmp_unstore_data( iostream* str, unsigned char** data )
 	// alloc memory for data
 	*data = (unsigned char*) calloc( size, sizeof( char ) );
 	if ( *data == NULL ) {
-		sprintf( errormessage, MEM_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return -1;
 	}
@@ -3355,7 +3360,7 @@ INTERN inline int pmp_unstore_data( iostream* str, unsigned char** data )
 	
 	// check for eof trouble
 	if ( str->chkeof() ) {
-		sprintf( errormessage, "unexpected end of data" );
+		snprintf( errormessage, MSG_SIZE, "unexpected end of data" );
 		errorlevel = 2;
 		return -1;
 	}
@@ -3894,7 +3899,7 @@ INTERN inline bool pmp_encode_region_data( aricoder* enc )
 		for ( granule = firstframe->granules[ch][0]; granule != NULL; granule = granule->next ) {
 			// --- region bounds (big_val_pairs, region0_size, region2_size) ---
 			if ( granule->big_val_pairs > 576 / 2 ) {
-				sprintf( errormessage, "big value pairs out of bounds (%ch>%ch)", granule->big_val_pairs, 576 / 2 );
+				snprintf( errormessage, MSG_SIZE, "big value pairs out of bounds (%ch>%ch)", granule->big_val_pairs, 576 / 2 );
 				errorlevel = 2;
 				return false;
 			}
@@ -4021,7 +4026,7 @@ INTERN inline bool pmp_decode_region_data( aricoder* dec )
 				granule->region_bound[1] =
 					mp3_bandwidth_bounds[(int)i_samplerate][s_r0+granule->region1_size+2];
 				// set bv bound and check other bounds
-				granule->region_bound[2] = granule->big_val_pairs << 1;
+				granule->region_bound[2] = CLAMPED( 0, 576, granule->big_val_pairs << 1 );
 				if ( granule->region_bound[0] > granule->region_bound[2] ) {
 					granule->region_bound[0] = granule->region_bound[2];
 					granule->region_bound[1] = granule->region_bound[2];
@@ -4039,7 +4044,7 @@ INTERN inline bool pmp_decode_region_data( aricoder* dec )
 				// decode bv pairs, set bound and check r0 bound
 				mod_bv->shift_context( 0 );
 				granule->big_val_pairs = decode_ari( dec, mod_bv );
-				granule->region_bound[1] = granule->big_val_pairs << 1;
+				granule->region_bound[1] = CLAMPED( 0, 576, granule->big_val_pairs << 1 );
 				if ( granule->region_bound[0] > granule->region_bound[1] )
 					granule->region_bound[0] = granule->region_bound[1];
 				granule->region_bound[2] = granule->region_bound[1];
@@ -4054,7 +4059,7 @@ INTERN inline bool pmp_decode_region_data( aricoder* dec )
 				// decode bv pairs, set bound and check r0 bound
 				mod_bv->shift_context( 1 );
 				granule->big_val_pairs = decode_ari( dec, mod_bv );
-				granule->region_bound[1] = granule->big_val_pairs << 1;
+				granule->region_bound[1] = CLAMPED( 0, 576, granule->big_val_pairs << 1 );
 				if ( granule->region_bound[0] > granule->region_bound[1] )
 					granule->region_bound[0] = granule->region_bound[1];
 				granule->region_bound[2] = granule->region_bound[1];
@@ -4628,7 +4633,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 			 ( sgn_c[ch] == NULL ) || ( sgnl_ctx_h[ch] == NULL ) || ( sgns_ctx_h[ch] == NULL ) ||
 			 ( len_c[ch] == NULL ) || ( lenl_ctx_h[ch] == NULL ) || ( lens_ctx_h[ch] == NULL ) ||
 			 ( lbt_c[ch] == NULL ) ) {
-			sprintf( errormessage, MEM_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -4734,7 +4739,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 				
 				// sanity check
 				if ( huffman->get_count() > lmaxp ) { // main data not big enough - no rollback for scfs
-					sprintf( errormessage, "huffman decoding error (in frame #%i)", frame->n );
+					snprintf( errormessage, MSG_SIZE, "huffman decoding error (in frame #%i)", frame->n );
 					errorlevel = 2;
 					return false;
 				}
@@ -4751,7 +4756,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 					// set table and linbits
 					bv_table = bv_dec_table + region_tables[ r ];
 					if ( bv_table->h == NULL ) { // illegal table?
-						sprintf( errormessage, "bad huffman table (%i) used (in frame #%i)",
+						snprintf( errormessage, MSG_SIZE, "bad huffman table (%i) used (in frame #%i)",
 							region_tables[ r ], frame->n );
 						errorlevel = 2;
 						return false;
@@ -5281,7 +5286,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 			 ( sgn_c[ch] == NULL ) || ( sgnl_ctx_h[ch] == NULL ) || ( sgns_ctx_h[ch] == NULL ) ||
 			 ( len_c[ch] == NULL ) || ( lenl_ctx_h[ch] == NULL ) || ( lens_ctx_h[ch] == NULL ) ||
 			 ( lbt_c[ch] == NULL ) ) {
-			sprintf( errormessage, MEM_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -5663,7 +5668,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 				if ( i % 8 == 0 ) *(++pna_c) = 0;
 			}
 			if ( pmp_predict_lame_anc( n, pad_and_aux ) == NULL ) {
-				sprintf( errormessage, "ancilary prediction error, please report" );
+				snprintf( errormessage, MSG_SIZE, "ancilary prediction error, please report" );
 				errorlevel = 2;
 				return false;
 			}
@@ -5777,7 +5782,7 @@ INTERN inline bool pmp_unstore_unmute_data( iostream* str )
 	// alloc memory for unmute data
 	unmute_data = (unsigned char*) calloc( unmute_data_size, sizeof( char ) );
 	if ( unmute_data == NULL ) {
-		sprintf( errormessage, MEM_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -5788,7 +5793,7 @@ INTERN inline bool pmp_unstore_unmute_data( iostream* str )
 	
 	// check for eof
 	if ( str->chkeof() ) {
-		sprintf( errormessage, "unexpected end of data" );
+		snprintf( errormessage, MSG_SIZE, "unexpected end of data" );
 		errorlevel = 2;
 		return false;
 	}
@@ -5828,7 +5833,7 @@ INTERN inline bool pmp_build_context( void )
 	gg_context[0] = (unsigned char*) calloc ( ngr, sizeof( char ) );
 	gg_context[1] = (unsigned char*) calloc ( ngr, sizeof( char ) );
 	if ( ( gg_context[0] == NULL ) || ( gg_context[1] == NULL ) ) {
-		sprintf( errormessage, MEM_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -6023,15 +6028,17 @@ INTERN inline char* create_filename( const char* base, const char* extension )
 #if !defined(BUILD_LIB)
 INTERN inline char* unique_filename( const char* base, const char* extension )
 {
-	int len = strlen( base ) + ( ( extension == NULL ) ? 0 : strlen( extension ) + 1 ) + 1;	
+	int len = strlen( base ) + ( ( extension == NULL ) ? 0 : strlen( extension ) + 1 ) + 2;	
 	char* filename = (char*) calloc( len, sizeof( char ) );	
 	
 	// create a unique filename using underscores
 	strcpy( filename, base );
 	set_extension( filename, extension );
 	while ( file_exists( filename ) ) {
-		len += sizeof( char );
-		filename = (char*) realloc( filename, len );
+		len += 1;
+		char* tmp = (char*) realloc( filename, len );
+		if ( tmp == NULL ) { free( filename ); return NULL; }
+		filename = tmp;
 		add_underscore( filename );
 	}
 	
@@ -6080,9 +6087,14 @@ INTERN inline void add_underscore( char* filename )
 		(*extstr++) = '_';
 		strcpy( extstr, strrchr( tmpname, '.' ) );
 	}
-	else
-		sprintf( filename, "%s_", tmpname );
-		
+	else {
+		size_t _len = strlen( tmpname );
+		// safe: unique_filename guarantees +2 bytes of headroom for this case
+		memcpy( filename, tmpname, _len );
+		filename[ _len ] = '_';
+		filename[ _len + 1 ] = '\0';
+	}
+	
 	// free memory
 	free( tmpname );
 }
@@ -6123,7 +6135,7 @@ INTERN bool write_file( const char* base, const char* ext, void* data, int bpv, 
 	// open file for output
 	fp = fopen( fn, "wb" );	
 	if ( fp == NULL ) {
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -6160,7 +6172,7 @@ INTERN bool write_errfile( void )
 	// open file for output
 	fp = fopen( fn, "w" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -6210,7 +6222,7 @@ INTERN bool write_file_analysis( void )
 	// open file for output
 	fp = fopen( fn, "a" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -6344,7 +6356,7 @@ INTERN bool write_block_analysis( void )
 	// open file for output
 	fp = fopen( fn, "w" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -6415,7 +6427,7 @@ INTERN bool write_block_analysis( void )
 		// open file for output
 		fp = fopen( fn, "w" );
 		if ( fp == NULL ){
-			sprintf( errormessage, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -6535,7 +6547,7 @@ INTERN bool write_stat_analysis( void )
 	// open file for output
 	fp = fopen( fn, "a" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -6696,7 +6708,7 @@ INTERN bool visualize_headers( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7116,7 +7128,7 @@ INTERN bool visualize_decoded_data( void )
 		free( fn );
 		if ( fp[i] == NULL ) {
 			for ( i--; i >= 0; i-- ) fclose( fp[i] );
-			sprintf( errormessage, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -7153,7 +7165,7 @@ INTERN bool visualize_decoded_data( void )
 		if ( data_sc[i] == NULL ) {
 			free( temp_sc ); free( temp_cf );
 			for ( i = (nfs+nfc) - 1; i >= 0; i-- ) fclose( fp[i] );
-			sprintf( errormessage, MEM_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -7163,7 +7175,7 @@ INTERN bool visualize_decoded_data( void )
 		if ( data_cf[i] == NULL ) {
 			free( temp_sc ); free( temp_cf );
 			for ( i = (nfs+nfc) - 1; i >= 0; i-- ) fclose( fp[i] );
-			sprintf( errormessage, MEM_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}
@@ -7386,7 +7398,7 @@ INTERN bool dump_main_sizes( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7417,7 +7429,7 @@ INTERN bool dump_aux_sizes( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7451,7 +7463,7 @@ INTERN bool dump_bitrates( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7485,7 +7497,7 @@ INTERN bool dump_stereo_ms( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7519,7 +7531,7 @@ INTERN bool dump_padding( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7551,7 +7563,7 @@ INTERN bool dump_main_data_bits( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7589,7 +7601,7 @@ INTERN bool dump_big_value_ns( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7627,7 +7639,7 @@ INTERN bool dump_global_gain( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7665,7 +7677,7 @@ INTERN bool dump_slength( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7703,7 +7715,7 @@ INTERN bool dump_block_types( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7742,7 +7754,7 @@ INTERN bool dump_sharing( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7782,7 +7794,7 @@ INTERN bool dump_preemphasis( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7820,7 +7832,7 @@ INTERN bool dump_coarse( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7858,7 +7870,7 @@ INTERN bool dump_htable_sel( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7900,7 +7912,7 @@ INTERN bool dump_region_sizes( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -7943,7 +7955,7 @@ INTERN bool dump_subblock_gains( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -8003,7 +8015,7 @@ INTERN bool dump_data_files( void )
 	if ( ( fp_huf == NULL ) || ( fp_aux == NULL ) ) {
 		if ( fp_huf != NULL ) fclose( fp_huf );
 		if ( fp_aux != NULL ) fclose( fp_aux );
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -8043,7 +8055,7 @@ INTERN bool dump_gg_ctx( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		sprintf( errormessage, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
@@ -8099,7 +8111,7 @@ INTERN bool dump_decoded_data( void )
 				if ( fp_cf[ch] != NULL ) fclose( fp_cf[ch] );
 				if ( fp_sc[ch] != NULL ) fclose( fp_sc[ch] );
 			}
-			sprintf( errormessage, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
 			errorlevel = 2;
 			return false;
 		}

@@ -1,56 +1,80 @@
-# packXXX Makefile, based on UniMake: Universal Makefile
-# Created by Matthias Stirner, 01/2016
+# packMP3 Makefile
+# Originally by Matthias Stirner, 01/2016
+# Updated 2026: clang support, fixed Linux static flags, C++17, snprintf guards
 
 TARGET   = packMP3
-CC       = gcc
-CPP      = g++
-RC       = windres -O coff
-CPPFLAGS = -I. -O3 -Wall -pedantic -funroll-loops -ffast-math -fsched-spec-load -fomit-frame-pointer
-LDFLAGS  = -static -static-libgcc -static-libstdc++
-CSRC     = $(wildcard *.c)
-CPPSRC   = $(wildcard *.cpp)
-DEPS     = $(wildcard *.h) Makefile
-OBJ      = $(patsubst %.c,%.o,$(CSRC)) $(patsubst %.cpp,%.o,$(CPPSRC))
 
-# conditional stuff
+# Compiler selection: use CXX from environment or default to g++
+# Override with: make CXX=clang++ or make CXX=g++
+CXX     ?= g++
+RC       = windres -O coff
+
+# Base flags — shared across all platforms and compilers
+CXXFLAGS  = -I. -std=c++17 -O3 -Wall -Wextra -pedantic \
+             -funroll-loops -ffast-math -fomit-frame-pointer
+LDFLAGS   =
+
+CSRC     = $(wildcard *.c)
+CXXSRC   = $(wildcard *.cpp)
+DEPS     = $(wildcard *.h) Makefile
+OBJ      = $(patsubst %.c,%.o,$(CSRC)) $(patsubst %.cpp,%.o,$(CXXSRC))
+
+# ---- Platform detection ----
 ifeq ($(OS),Windows_NT)
-LDFLAGS  += -lpthread -L libwinpthread-1.dll
-RES       = icons.res
-UPX      := -upx --best --lzma $(TARGET).exe
+  LDFLAGS  += -static -static-libgcc -static-libstdc++ -lpthread -L libwinpthread-1.dll
+  RES       = icons.res
+  UPX      := upx --best --lzma $(TARGET).exe
 else
-CPPFLAGS += -DUNIX
-RC        = 
-RES       =
-UPX       =
+  CXXFLAGS += -DUNIX
+  # On Linux, -static requires all libs to have static variants available.
+  # We leave it out by default; pass STATIC=1 to opt in.
+  ifeq ($(STATIC),1)
+    LDFLAGS += -static -static-libgcc -static-libstdc++
+  endif
+  RC  =
+  RES =
+  UPX =
 endif
 
+# ---- Compiler-specific flags ----
+ifeq ($(findstring clang,$(CXX)),clang)
+  # clang does not support -fsched-spec-load
+  CXXFLAGS += -Wno-unknown-warning-option
+else
+  # GCC-specific scheduler optimization
+  CXXFLAGS += -fsched-spec-load
+endif
+
+# ---- Rules ----
 %.o: %.cpp $(DEPS)
-	$(CPP) -c -o $@ $< $(CPPFLAGS)
-	
+	$(CXX) -c -o $@ $< $(CXXFLAGS)
+
 %.res: %.rc
 	@-$(RC) $< $@
 
 $(TARGET): $(OBJ) $(RES)
-	$(CPP) -o $@ $^ -s $(LDFLAGS)
+	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib dll
+.PHONY: all dev lib dll clean
 
 all: $(TARGET)
 
-dev: CPPFLAGS += -DDEV_BUILD
+# Developer build: extra assertions, debug symbols
+dev: CXXFLAGS += -DDEV_BUILD -O0 -g
 dev: $(TARGET)
 
-lib: CPPFLAGS += -DBUILD_LIB
+# Static library build
+lib: CXXFLAGS += -DBUILD_LIB
 lib: $(OBJ)
-	ar r $(TARGET)lib.a $(OBJ)
-	ranlib $(TARGET)lib.a
-    
-dll: CPPFLAGS += -DBUILD_DLL
-dll: LDFLAGS  += -Wl,--out-implib,libpackJPG.a -fvisibility=hidden
+	ar rcs $(TARGET)lib.a $(OBJ)
+
+# Shared library build
+dll: CXXFLAGS += -DBUILD_DLL -fvisibility=hidden
+dll: LDFLAGS  += -Wl,--out-implib,lib$(TARGET).a
 dll: $(OBJ)
-	$(CPP) -shared -o $(TARGET).dll $^ $(LDFLAGS)
+	$(CXX) -shared -o $(TARGET).so $^ $(LDFLAGS)
 
 clean:
-	@echo clean...
-	@-rm *.o *.a $(TARGET) $(TARGET).exe $(TARGET).dll
+	@echo "Cleaning..."
+	@-rm -f *.o *.a *.so $(TARGET) $(TARGET).exe $(TARGET).dll
