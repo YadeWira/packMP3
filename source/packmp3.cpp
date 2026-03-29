@@ -85,7 +85,9 @@ INTERN inline unsigned char* mp3_build_fixed( mp3Frame* frame );
 INTERN inline int mp3_seek_firstframe( unsigned char* data, int size );
 INTERN inline int mp3_get_id3_size( unsigned char* id3tag, int max_size );
 INTERN inline unsigned short mp3_calc_layer3_crc( unsigned char* header, unsigned char* sideinfo, int sidesize );
+#if !defined(BUILD_LIB) && defined(DEV_BUILD)
 INTERN inline granuleData*** mp3_decode_frame( huffman_reader* dec, mp3Frame* frame );
+#endif
 
 
 /* -----------------------------------------------
@@ -2904,6 +2906,7 @@ INTERN inline unsigned short mp3_calc_layer3_crc( unsigned char* header, unsigne
 /* -----------------------------------------------
 	decode one MP3 frame
 	----------------------------------------------- */
+#if !defined(BUILD_LIB) && defined(DEV_BUILD)
 INTERN inline granuleData*** mp3_decode_frame( huffman_reader* dec, mp3Frame* frame )
 {
 	// storage
@@ -3053,6 +3056,7 @@ INTERN inline granuleData*** mp3_decode_frame( huffman_reader* dec, mp3Frame* fr
 	
 	return frame_data;
 }
+#endif // DEV_BUILD
 
 /* ----------------------- End of MP3 specific functions -------------------------- */
 
@@ -7112,7 +7116,7 @@ INTERN bool visualize_decoded_data( void )
 	unsigned char* data_sc[nfs];
 	unsigned char* temp_cf;
 	unsigned char* temp_sc;	
-	int temp_reg[15];
+	int temp_reg[16];
 	int tmp;
 	int gr, ch;
 	int blt;
