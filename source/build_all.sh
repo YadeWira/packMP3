@@ -11,11 +11,13 @@ cd "$(dirname "$0")"
 
 SRC="aricoder.cpp bitops.cpp huffmp3.cpp packmp3.cpp"
 CFLAGS="-I. -O3 -Wall -Wextra -funroll-loops -ffast-math -fomit-frame-pointer -std=c++17"
+CFLAGS_NATIVE="$CFLAGS -march=native"  # CPU-specific, not for distribution
 OUT="bin"
 
 mkdir -p "$OUT"
 
 ok()   { echo "[OK]  $*"; }
+skip() { echo "[--]  $*"; }
 fail() { echo "[!!]  $*"; exit 1; }
 
 # --- Linux x64 ---------------------------------------------------------------
@@ -35,25 +37,43 @@ $CXX $CFLAGS -DUNIX \
     $SRC \
     && ok "bin/packMP3_linux_x64"
 
+# native build (optimized for this machine only, not for distribution)
+$CXX $CFLAGS_NATIVE -DUNIX \
+    -o "$OUT/packMP3_linux_x64_native" \
+    $SRC \
+    && ok "bin/packMP3_linux_x64_native (native, do not distribute)"
+
 # --- Windows x64 -------------------------------------------------------------
 
 echo ""
 echo "==> Windows x64"
 WIN64="x86_64-w64-mingw32-g++"
+WINDRES64="x86_64-w64-mingw32-windres"
 if ! command -v $WIN64 &>/dev/null; then
-    echo "    [--] $WIN64 not found, skipping Windows x64"
-    echo "         Install with: sudo apt install mingw-w64"
+    skip "$WIN64 not found, skipping Windows x64"
+    echo "    Install with: sudo apt install mingw-w64"
 else
+    # Try to compile icon resource for x64
+    ICONS64=""
+    if ! [ -f icons.rc ]; then
+        echo "    [--] icons.rc not found — binary will have no icon"
+    elif command -v $WINDRES64 &>/dev/null; then
+        $WINDRES64 -O coff icons.rc -o icons_x64.o 2>/dev/null \
+            && ICONS64="icons_x64.o" \
+            && echo "    [OK] icons compiled for x64" \
+            || echo "    [--] windres failed — binary will have no icon"
+    else
+        echo "    [--] $WINDRES64 not found — binary will have no icon"
+    fi
+
     $WIN64 $CFLAGS \
         -o "$OUT/packMP3_win_x64.exe" \
-        $SRC icons.res \
+        $SRC $ICONS64 \
         -static -static-libgcc -static-libstdc++ \
-        2>/dev/null || \
-    $WIN64 $CFLAGS \
-        -o "$OUT/packMP3_win_x64.exe" \
-        $SRC \
-        -static -static-libgcc -static-libstdc++ \
+    && x86_64-w64-mingw32-strip --strip-unneeded "$OUT/packMP3_win_x64.exe" \
         && ok "bin/packMP3_win_x64.exe"
+
+    [ -f icons_x64.o ] && rm -f icons_x64.o
 fi
 
 # --- Windows x86 (32-bit) ----------------------------------------------------
@@ -61,20 +81,32 @@ fi
 echo ""
 echo "==> Windows x86 (32-bit)"
 WIN32="i686-w64-mingw32-g++"
+WINDRES32="i686-w64-mingw32-windres"
 if ! command -v $WIN32 &>/dev/null; then
-    echo "    [--] $WIN32 not found, skipping Windows x86"
-    echo "         Install with: sudo apt install mingw-w64"
+    skip "$WIN32 not found, skipping Windows x86"
+    echo "    Install with: sudo apt install mingw-w64"
 else
+    # Try to compile icon resource for x86
+    ICONS32=""
+    if ! [ -f icons.rc ]; then
+        echo "    [--] icons.rc not found — binary will have no icon"
+    elif command -v $WINDRES32 &>/dev/null; then
+        $WINDRES32 -O coff icons.rc -o icons_x86.o 2>/dev/null \
+            && ICONS32="icons_x86.o" \
+            && echo "    [OK] icons compiled for x86" \
+            || echo "    [--] windres failed — binary will have no icon"
+    else
+        echo "    [--] $WINDRES32 not found — binary will have no icon"
+    fi
+
     $WIN32 $CFLAGS \
         -o "$OUT/packMP3_win_x86.exe" \
-        $SRC icons.res \
+        $SRC $ICONS32 \
         -static -static-libgcc -static-libstdc++ \
-        2>/dev/null || \
-    $WIN32 $CFLAGS \
-        -o "$OUT/packMP3_win_x86.exe" \
-        $SRC \
-        -static -static-libgcc -static-libstdc++ \
+    && i686-w64-mingw32-strip --strip-unneeded "$OUT/packMP3_win_x86.exe" \
         && ok "bin/packMP3_win_x86.exe"
+
+    [ -f icons_x86.o ] && rm -f icons_x86.o
 fi
 
 # --- Summary -----------------------------------------------------------------

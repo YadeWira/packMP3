@@ -1,0 +1,55 @@
+Developer functions — packMP3
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+packMP3 contains functionality designed for developers and researchers.
+These functions are compiled in only when the -DDEV_BUILD flag is used.
+
+
+Enabling developer mode
+~~~~~~~~~~~~~~~~~~~~~~~
+Build with:
+  make dev
+or:
+  g++ -DUNIX -DDEV_BUILD ... packmp3.cpp ...
+
+At runtime, pass -dev to unlock developer switches:
+  packMP3 -dev [switches] file.mp3
+
+
+Developer switches
+~~~~~~~~~~~~~~~~~~
+  -dev      required to enable any of the switches below
+
+  -test     verify files after processing; keep output on error
+            (same as -ver but retains broken output for inspection)
+
+  -stat     write statistical analysis CSV of frame data
+  -fana     write detailed per-frame analysis to .nfo file
+  -bana     write block-level analysis data
+  -dsep     dump compressed data into separate stream files
+  -pgm      write PGM visualisation of decoded coefficients/scalefactors
+  -dcd      dump raw decoded coefficient and scalefactor binary files
+
+
+Output files produced by developer switches
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  -stat : <input>.stat.csv         frame statistics (CSV)
+  -fana : <input>.fana.nfo         per-frame analysis
+  -bana : <input>.bana.nfo         block analysis
+  -dsep : <input>.*.bin            separate data streams
+  -pgm  : <input>.coefs.pgm        coefficient visualisation
+          <input>.scfs.pgm         scalefactor visualisation
+  -dcd  : <input>.coefs.ch0.s2b    raw coefficients channel 0
+          <input>.coefs.ch1.s2b    raw coefficients channel 1
+          <input>.scfs.ch0.u1b     raw scalefactors channel 0
+          <input>.scfs.ch1.u1b     raw scalefactors channel 1
+          <input>.*.u1b / *.u2b    per-field dumps (bitrate, gain, etc.)
+
+
+Notes
+~~~~~
+- Developer functions only compile with -DDEV_BUILD; the normal build
+  does not include them, keeping the binary lean.
+- The -dev runtime flag is an additional safety: even a DEV_BUILD binary
+  will not activate developer paths without -dev on the command line.
+- Output files are written to the same directory as the input file.

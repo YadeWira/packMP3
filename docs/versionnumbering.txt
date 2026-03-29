@@ -1,0 +1,30 @@
+Version numbering guideline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The packMP3 version consists of two parts: the main version number and
+the sub version string. Example: "packMP3 v1.0g" has main version "1.0"
+and sub version string "g".
+
+Compatibility rules
+~~~~~~~~~~~~~~~~~~~
+Compressed .pmp files must be compatible across sub-versions:
+  packMP3 v1.0a compressed files can be extracted by v1.0, v1.0b, etc.
+
+Only a change in the MAIN version number may break compatibility:
+  packMP3 v1.0 cannot read files compressed by a hypothetical v2.0.
+
+The sub version string indicates smaller changes that do not break
+compatibility (bug fixes, speed improvements). It can be empty (first
+release of a new main version) and should be enumerated: a, b, c, ...,
+z, aa, ab, ...
+
+Changing version in source
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+Edit these constants in packmp3.cpp:
+
+  INTERN const unsigned char appversion = 11; // main version (11 = v1.1)
+  INTERN const char*  subversion   = "";       // sub version string
+
+The displayed version is: v{appversion/10}.{appversion%10}{subversion}
+  appversion=11, subversion=""  -> "v1.1"
+  appversion=10, subversion="g" -> "v1.0g"

@@ -18,6 +18,7 @@
 #endif
 
 #define INTERN static
+#define THREAD_LOCAL static  // placeholder for future thread-local state
 
 #define INIT_MODEL_S(a,b,c) new model_s( a, b, c, 511 )
 #define INIT_MODEL_B(a,b)   new model_b( a, b, 511 )
@@ -28,9 +29,9 @@
 #define CLAMPED(l,h,v)	( ( v < l ) ? l : ( v > h ) ? h : v )
 
 #define MEM_ERRMSG	"out of memory error"
-#define FRD_ERRMSG	"could not read file / file not found"
-#define FWR_ERRMSG	"could not write file / file write-protected"
-#define MSG_SIZE	128
+#define FRD_ERRMSG	"could not read file / file not found: %s"
+#define FWR_ERRMSG	"could not write file / file write-protected: %s"
+#define MSG_SIZE	512
 #define BARLEN		36
 
 // special realloc with guaranteed free() of previous memory
@@ -274,7 +275,7 @@ INTERN int*   err_tp   = NULL;		// list of error types
 	global variables: messages
 	----------------------------------------------- */
 
-INTERN char errormessage [ 128 ];
+INTERN char errormessage [ MSG_SIZE ];
 INTERN bool (*errorfunction)();
 INTERN int  errorlevel;
 // meaning of errorlevel:
@@ -288,6 +289,9 @@ INTERN int  errorlevel;
 	global variables: settings
 	----------------------------------------------- */
 
+INTERN bool compress_only   = false;	// -c: only compress MP3 files, skip PMP silently
+INTERN bool decompress_only = false;	// -x: only decompress PMP files, skip MP3 silently
+
 #if !defined( BUILD_LIB )
 INTERN int  verbosity  = -1;		// level of verbosity
 INTERN bool overwrite  = false;		// overwrite files yes / no
@@ -295,9 +299,8 @@ INTERN bool wait_exit  = true;		// pause after finished yes / no
 INTERN int  verify_lv  = 0;			// verification level ( none (0), simple (1), detailed output (2) )
 INTERN int  err_tol    = 1;			// error threshold ( proceed on warnings yes (2) / no (1) )
 
-INTERN bool developer  = false;		// allow developers functions yes/no
-INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
-
+INTERN bool developer      = false;		// allow developers functions yes/no
+INTERN int  action         = A_COMPRESS;// what to do with MP3/PMP files
 INTERN FILE*  msgout   = stdout;	// stream for output of messages
 INTERN bool   pipe_on  = false;		// use stdin/stdout instead of filelist
 #else
@@ -618,6 +621,8 @@ EXPORT void pmplib_init_streams( void* in_src, int in_type, int in_size, void* o
 	if ( (buffer[0] == pmp_magic[0]) && (buffer[1] == pmp_magic[1]) ) {
 		// file is PMP
 		filetype = F_PMP;
+		// skip silently if -c (compress only)
+		if ( compress_only ) { return; }
 		// copy filenames
 		const char* _in_name  = ( in_type  == 0 ) ? static_cast<const char*>( in_src )  : "PMP in memory";
 		const char* _out_name = ( out_type == 0 ) ? static_cast<const char*>( out_dest ) : "MP3 in memory";
@@ -628,6 +633,8 @@ EXPORT void pmplib_init_streams( void* in_src, int in_type, int in_size, void* o
 	} else {
 		// file is MP3
 		filetype = F_MP3;
+		// skip silently if -x (decompress only)
+		if ( decompress_only ) { return; }
 		// copy filenames
 		const char* _in_name  = ( in_type  == 0 ) ? static_cast<const char*>( in_src )  : "MP3 in memory";
 		const char* _out_name = ( out_type == 0 ) ? static_cast<const char*>( out_dest ) : "PMP in memory";
@@ -728,6 +735,12 @@ INTERN void initialize_options( int argc, char** argv )
 		}
 		else if ( strcmp((*argv), "-o" ) == 0 ) {
 			overwrite = true;
+		}
+		else if ( strcmp((*argv), "-c" ) == 0 ) {
+			compress_only = true;
+		}
+		else if ( strcmp((*argv), "-x" ) == 0 ) {
+			decompress_only = true;
 		}
 		#if defined(DEV_BUILD)
 		else if ( strcmp((*argv), "-dev") == 0 ) {
@@ -1040,6 +1053,8 @@ INTERN void show_help( void )
 	fprintf( msgout, " [-v?]    set level of verbosity (max: 2) (def: 0)\n" );
 	fprintf( msgout, " [-np]    no pause after processing files\n" );
 	fprintf( msgout, " [-o]     overwrite existing files\n" );
+	fprintf( msgout, " [-c]     compress only: process MP3 files, skip PMP\n" );
+	fprintf( msgout, " [-x]     decompress only: process PMP files, skip MP3\n" );
 	fprintf( msgout, " [-p]     proceed on warnings\n" );
 	#if defined(DEV_BUILD)
 	if ( developer ) {
@@ -1282,7 +1297,7 @@ INTERN bool check_file( void )
 	// open input stream, check for errors
 	str_in = new iostream( (void*) filename, ( !pipe_on ) ? 0 : 2, 0, 0 );
 	if ( str_in->chkerr() ) {
-		snprintf( errormessage, MSG_SIZE, FRD_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FRD_ERRMSG, filename );
 		errorlevel = 2;
 		return false;
 	}
@@ -1301,7 +1316,7 @@ INTERN bool check_file( void )
 	
 	// rewind (need to start from the beginning)
 	if ( str_in->rewind() != 0 ) {
-		snprintf( errormessage, MSG_SIZE, FRD_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FRD_ERRMSG, filename );
 		errorlevel = 2;
 		return false;
 	}
@@ -1310,6 +1325,8 @@ INTERN bool check_file( void )
 	if ( ( fileid[0] == pmp_magic[0] ) && ( fileid[1] == pmp_magic[1] ) ) {
 		// PMP marker -> file is PMP
 		filetype = F_PMP;
+		// skip silently if -c flag (compress only)
+		if ( compress_only ) return false;
 		// create filenames
 		if ( !pipe_on ) {
 			pmpfilename = (char*) calloc( strlen( filename ) + 1, sizeof( char ) );
@@ -1325,7 +1342,7 @@ INTERN bool check_file( void )
 		// open output stream, check for errors
 		str_out = new iostream( (void*) mp3filename, ( !pipe_on ) ? 0 : 2, 0, 1 );
 		if ( str_out->chkerr() ) {
-			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, mp3filename );
 			errorlevel = 2;
 			return false;
 		}
@@ -1333,6 +1350,8 @@ INTERN bool check_file( void )
 	else {
 		// for all other cases we assume that file might be MPEG X LAYER Y
 		filetype = F_MP3;
+		// skip silently if -x flag (decompress only)
+		if ( decompress_only ) return false;
 		// create filenames
 		if ( !pipe_on ) {
 			mp3filename = (char*) calloc( strlen( filename ) + 1, sizeof( char ) );
@@ -1348,7 +1367,7 @@ INTERN bool check_file( void )
 		// open output stream, check for errors
 		str_out = new iostream( (void*) pmpfilename, ( !pipe_on ) ? 0 : 2, 0, 1 );
 		if ( str_out->chkerr() ) {
-			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, pmpfilename );
 			errorlevel = 2;
 			return false;
 		}
@@ -6139,7 +6158,8 @@ INTERN bool write_file( const char* base, const char* ext, void* data, int bpv, 
 	// open file for output
 	fp = fopen( fn, "wb" );	
 	if ( fp == NULL ) {
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
+		free( fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -6176,7 +6196,8 @@ INTERN bool write_errfile( void )
 	// open file for output
 	fp = fopen( fn, "w" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
+		free( fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -6226,7 +6247,7 @@ INTERN bool write_file_analysis( void )
 	// open file for output
 	fp = fopen( fn, "a" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -6360,7 +6381,8 @@ INTERN bool write_block_analysis( void )
 	// open file for output
 	fp = fopen( fn, "w" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
+		free( fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -6431,7 +6453,7 @@ INTERN bool write_block_analysis( void )
 		// open file for output
 		fp = fopen( fn, "w" );
 		if ( fp == NULL ){
-			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 			errorlevel = 2;
 			return false;
 		}
@@ -6551,7 +6573,7 @@ INTERN bool write_stat_analysis( void )
 	// open file for output
 	fp = fopen( fn, "a" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -6712,7 +6734,7 @@ INTERN bool visualize_headers( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7129,13 +7151,14 @@ INTERN bool visualize_decoded_data( void )
 		fn = create_filename( filelist[ file_no ], ext[i] );
 		// open file for output
 		fp[i] = fopen( fn, "wb" );
-		free( fn );
 		if ( fp[i] == NULL ) {
 			for ( i--; i >= 0; i-- ) fclose( fp[i] );
-			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
+			free( fn );
 			errorlevel = 2;
 			return false;
 		}
+		free( fn );
 	}
 	
 	// decide widths for both (try reaching 4:3 ratio)
@@ -7402,7 +7425,7 @@ INTERN bool dump_main_sizes( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7433,7 +7456,7 @@ INTERN bool dump_aux_sizes( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7467,7 +7490,7 @@ INTERN bool dump_bitrates( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7501,7 +7524,7 @@ INTERN bool dump_stereo_ms( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7535,7 +7558,7 @@ INTERN bool dump_padding( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7567,7 +7590,7 @@ INTERN bool dump_main_data_bits( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7605,7 +7628,7 @@ INTERN bool dump_big_value_ns( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7643,7 +7666,7 @@ INTERN bool dump_global_gain( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7681,7 +7704,7 @@ INTERN bool dump_slength( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7719,7 +7742,7 @@ INTERN bool dump_block_types( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7758,7 +7781,7 @@ INTERN bool dump_sharing( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7798,7 +7821,7 @@ INTERN bool dump_preemphasis( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7836,7 +7859,7 @@ INTERN bool dump_coarse( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7874,7 +7897,7 @@ INTERN bool dump_htable_sel( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7916,7 +7939,7 @@ INTERN bool dump_region_sizes( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -7959,7 +7982,7 @@ INTERN bool dump_subblock_gains( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -8014,15 +8037,16 @@ INTERN bool dump_data_files( void )
 	// open aux file
 	fn = create_filename( filelist[ file_no ], "aux_data.s1b" );
 	fp_aux = fopen( fn, "wb" );
-	free( fn );
 	// check for problems
 	if ( ( fp_huf == NULL ) || ( fp_aux == NULL ) ) {
 		if ( fp_huf != NULL ) fclose( fp_huf );
 		if ( fp_aux != NULL ) fclose( fp_aux );
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
+		free( fn );
 		errorlevel = 2;
 		return false;
 	}
+	free( fn );
 	
 	// dump data
 	for ( mp3Frame* frame = firstframe; frame != NULL; frame = frame->next ) {
@@ -8059,7 +8083,7 @@ INTERN bool dump_gg_ctx( void )
 	// open file for output
 	fp = fopen( fn, "wb" );
 	if ( fp == NULL ){
-		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+		snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
 		errorlevel = 2;
 		return false;
 	}
@@ -8108,17 +8132,18 @@ INTERN bool dump_decoded_data( void )
 		fn = create_filename( filelist[ file_no ], ext_sc[ch] );
 		// open file for output
 		fp_sc[ch] = fopen( fn, "wb" );
-		free( fn );
 		// error checking and file pointer rollback
 		if ( ( fp_cf[ch] == NULL ) || ( fp_sc[ch] == NULL ) ) {
 			for ( ; ch >= 0; ch-- ) { 
 				if ( fp_cf[ch] != NULL ) fclose( fp_cf[ch] );
 				if ( fp_sc[ch] != NULL ) fclose( fp_sc[ch] );
 			}
-			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG );
+			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, fn );
+			free( fn );
 			errorlevel = 2;
 			return false;
 		}
+		free( fn );
 	}
 	
 	// init decoder	

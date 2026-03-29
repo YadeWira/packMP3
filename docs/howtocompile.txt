@@ -1,0 +1,55 @@
+How to compile packMP3
+~~~~~~~~~~~~~~~~~~~~~~
+
+Requirements
+~~~~~~~~~~~~
+- A C++17-capable compiler: clang++ 6+ or g++ 7+
+- GNU make (for the Makefile)
+- cmake 3.14+ (optional, alternative to Makefile)
+- mingw-w64 (optional, for Windows cross-compilation)
+  Ubuntu/Debian: sudo apt install mingw-w64
+  Arch:          sudo pacman -S mingw-w64-gcc
+  macOS:         brew install mingw-w64
+
+
+Quick build (Linux)
+~~~~~~~~~~~~~~~~~~~
+  cd source
+  make                   # builds ./packMP3
+  make CXX=clang++       # build with clang instead of g++
+  make STATIC=1          # link statically (requires static libs)
+  make dev               # debug build with -DDEV_BUILD -O0 -g
+  make clean
+
+
+Cross-platform build (all targets)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  cd source
+  bash build_all.sh      # produces bin/packMP3_linux_x64
+                         #          bin/packMP3_win_x64.exe
+                         #          bin/packMP3_win_x86.exe
+
+
+CMake build
+~~~~~~~~~~~
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build
+  cmake --install build       # installs to /usr/local by default
+
+
+Library builds
+~~~~~~~~~~~~~~
+  make lib    # produces packMP3lib.a  (static library)
+  make dll    # produces packMP3.so    (shared library, Linux)
+              #           packMP3.dll  (shared library, Windows)
+
+  Link against packMP3lib.a : use packmp3lib.h for the API
+  Link against packMP3.dll  : use packmp3dll.h for the API
+
+
+Compiler flags reference
+~~~~~~~~~~~~~~~~~~~~~~~~
+  -DUNIX        required on Linux/macOS (not needed on Windows)
+  -DBUILD_LIB   build as static library (omits main() and UI)
+  -DBUILD_DLL   build as shared library (exports symbols)
+  -DDEV_BUILD   include developer-only functions (see developer.txt)
