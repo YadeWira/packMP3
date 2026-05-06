@@ -1,6 +1,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctime>
+#include <cstdio>
+
+// v2.0: std::filesystem for -r recursion / -fs folder-structure preservation.
+#include <filesystem>
+#include <vector>
+#include <utility>
+#include <system_error>
+
+// v2.0 color support: needs isatty/fileno on POSIX and console-mode APIs on Windows.
+#if defined(_WIN32) || defined(WIN32)
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#endif
 
 #include "pmp3tbl.h"
 #include "pmp3bitlen.h"
@@ -340,6 +354,45 @@ INTERN const char*  mp3_ext      = "mp3";
 INTERN const char   pmp_magic[] = { 'M', 'S' };
 
 
+// ─── v2.0 Color support ──────────────────────────────────────────────────────
+// ANSI escape codes — empty strings when colors are disabled.
+// Call init_colors() once at startup (no-op in library builds).
+#if !defined(BUILD_LIB)
+static bool use_color = false;
+
+#define COL_RESET   (use_color ? "\033[0m"   : "")
+#define COL_CYAN    (use_color ? "\033[36m"  : "")
+#define COL_GRAY    (use_color ? "\033[90m"  : "")
+#define COL_BRED    (use_color ? "\033[1;31m": "")
+#define COL_BGREEN  (use_color ? "\033[1;32m": "")
+#define COL_BYELLOW (use_color ? "\033[1;33m": "")
+#define COL_BCYAN   (use_color ? "\033[1;36m": "")
+
+static void init_colors( void )
+{
+#if defined(_WIN32) || defined(WIN32)
+	// Switch console to UTF-8 so multi-byte characters render correctly
+	// regardless of --no-color. No-op when output isn't a console.
+	SetConsoleOutputCP( CP_UTF8 );
+	SetConsoleCP( CP_UTF8 );
+	if ( force_no_color ) return;
+	HANDLE h = GetStdHandle( STD_OUTPUT_HANDLE );
+	if ( h == INVALID_HANDLE_VALUE ) return;
+	DWORD mode = 0;
+	if ( !GetConsoleMode( h, &mode ) ) return;
+	// ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004) — Windows 10+.
+	if ( SetConsoleMode( h, mode | 0x0004 ) )
+		use_color = true;
+#else
+	if ( force_no_color ) return;
+	// Enable colors only if stdout is a real terminal and NO_COLOR is not set.
+	if ( isatty( fileno( stdout ) ) && getenv( "NO_COLOR" ) == NULL )
+		use_color = true;
+#endif
+}
+#endif
+
+
 /* -----------------------------------------------
 	main-function
 	----------------------------------------------- */
@@ -366,12 +419,21 @@ int main( int argc, char** argv )
 	
 	// read options from command line
 	initialize_options( argc, argv );
-	
+
+	// v2.0: enable ANSI colors if appropriate (after parsing so --no-color
+	// and -module are honoured). module_mode disables colors automatically
+	// to keep machine-friendly output clean.
+	if ( module_mode ) force_no_color = true;
+	init_colors();
+
 	// write program info to screen
-	fprintf( msgout,  "\n--> %s v%i.%i%s (%s) by %s <--\n",
-			apptitle, appversion / 10, appversion % 10, subversion, versiondate, author );
-	fprintf( msgout, "Copyright %s\nAll rights reserved\n\n", copyright );
-	
+	if ( !module_mode ) {
+		fprintf( msgout,  "\n%s--> %s v%i.%i%s (%s) by %s <--%s\n",
+				COL_BCYAN, apptitle, appversion / 10, appversion % 10,
+				subversion, versiondate, author, COL_RESET );
+		fprintf( msgout, "Copyright %s\nAll rights reserved\n\n", copyright );
+	}
+
 	// check if user input is wrong, show help screen if it is.
 	// v2.0: require a subcommand (a/x/mix/list/stats) unless piped or running
 	// in developer/dev-build mode.
@@ -708,10 +770,36 @@ EXPORT const char* pmplib_short_name( void )
 
 
 /* -----------------------------------------------
+	v2.0 helpers for -r recursion + -fs folder-structure preservation
+	----------------------------------------------- */
+
+#if !defined(BUILD_LIB)
+static bool is_mp3_or_pmp( const std::filesystem::path& p )
+{
+	std::string ext = p.extension().string();
+	for ( auto& ch : ext ) ch = (char)tolower( (unsigned char)ch );
+	return ext == ".mp3" || ext == ".pmp";
+}
+
+static void collect_files_recursive( const std::filesystem::path& dir,
+                                     std::vector<std::pair<std::string,std::string>>& out )
+{
+	std::error_code ec;
+	std::string src_root = dir.string();
+	for ( auto& entry : std::filesystem::recursive_directory_iterator( dir,
+	        std::filesystem::directory_options::skip_permission_denied, ec ) ) {
+		if ( entry.is_regular_file( ec ) && is_mp3_or_pmp( entry.path() ) )
+			out.push_back( { entry.path().string(), src_root } );
+	}
+}
+#endif
+
+
+/* -----------------------------------------------
 	reads in commandline arguments
 	----------------------------------------------- */
-	
-#if !defined(BUILD_LIB)	
+
+#if !defined(BUILD_LIB)
 INTERN void initialize_options( int argc, char** argv )
 {
 	int tmp_val;
@@ -857,6 +945,50 @@ INTERN void initialize_options( int argc, char** argv )
 		else {
 			// if argument is not switch, it's a filename
 			*(tmp_flp++) = *argv;
+		}
+	}
+
+	// v2.0: -r expansion. Replace any directory entries in filelist with
+	// the .mp3/.pmp files they contain (recursively). Tracks src_root in
+	// filelist_srcroot so -fs can mirror the relative subdir under -od.
+	if ( recursive ) {
+		std::vector<std::pair<std::string,std::string>> extra_files; // (path, src_root)
+		for ( int fi = 0; filelist[ fi ] != NULL; fi++ ) {
+			std::error_code ec;
+			std::filesystem::path p;
+			try { p = std::filesystem::path( filelist[ fi ] ); }
+			catch ( ... ) { continue; }
+			if ( std::filesystem::is_directory( p, ec ) ) {
+				filelist[ fi ] = NULL; // mark for compaction
+				collect_files_recursive( p, extra_files );
+			}
+		}
+		if ( !extra_files.empty() ) {
+			int existing = 0;
+			for ( ; filelist[ existing ] != NULL; existing++ );
+			filelist = (char**) realloc( filelist,
+				( existing + extra_files.size() + 1 ) * sizeof( char* ) );
+			filelist_srcroot = (char**) realloc( filelist_srcroot,
+				( existing + extra_files.size() + 1 ) * sizeof( char* ) );
+			int wi = 0;
+			for ( int fi = 0; fi < existing + (int)extra_files.size(); fi++ ) {
+				if ( fi < existing && filelist[ fi ] != NULL ) {
+					filelist[ wi ] = filelist[ fi ];
+					filelist_srcroot[ wi ] = NULL;  // direct args have no src_root
+					wi++;
+				}
+			}
+			for ( auto& pr : extra_files ) {
+				char* fn = (char*) malloc( pr.first.size() + 1 );
+				strcpy( fn, pr.first.c_str() );
+				filelist[ wi ] = fn;
+				char* sr = (char*) malloc( pr.second.size() + 1 );
+				strcpy( sr, pr.second.c_str() );
+				filelist_srcroot[ wi ] = sr;
+				wi++;
+			}
+			filelist[ wi ] = NULL;
+			filelist_srcroot[ wi ] = NULL;
 		}
 	}
 
@@ -1819,6 +1951,15 @@ INTERN bool read_mp3( void )
 	// clean up and store id3 tags and garbage data
 	data_after_size = mp3filesize - main_data_end;
 	data_before_size = main_data_begin;
+#if !defined(BUILD_LIB)
+	// v2.0 -d (disc_meta): drop any leading/trailing non-frame bytes
+	// (typically ID3v2 / ID3v1 / garbage). Roundtrip becomes irreversible
+	// — user opted in via the flag.
+	if ( disc_meta ) {
+		data_before_size = 0;
+		data_after_size  = 0;
+	}
+#endif
 	if ( data_after_size > 0 ) {
 		data_after = (unsigned char*) calloc( data_after_size, sizeof( char ) );
 		if ( ( mp3data == NULL ) || ( mp3filesize <= 0 ) ) {
@@ -6137,13 +6278,60 @@ INTERN inline void progress_bar( int current, int last )
 #if !defined(BUILD_LIB)
 INTERN inline char* create_filename( const char* base, const char* extension )
 {
-	int len = strlen( base ) + ( ( extension == NULL ) ? 0 : strlen( extension ) + 1 ) + 1;	
-	char* filename = (char*) calloc( len, sizeof( char ) );	
-	
-	// create a filename from base & extension
-	strcpy( filename, base );
+	// v2.0: when outdir is set, drop base's directory prefix and place
+	// the file under outdir. -fs: when -r expanded a dir AND outdir is
+	// set, mirror the path's relative subdir from src_root under outdir
+	// (caesium-clt -RS semantics).
+	const char* basename_only = base;
+	std::string fs_subdir; // set only when -fs applies
+	if ( outdir != NULL ) {
+		const char* sep = strrchr( base, '/' );
+	#if defined(_WIN32) || defined(WIN32)
+		const char* sep2 = strrchr( base, '\\' );
+		if ( sep2 > sep ) sep = sep2;
+	#endif
+		if ( sep != NULL ) basename_only = sep + 1;
+
+		if ( fs_mode && filelist_srcroot != NULL
+		     && file_no >= 0 && filelist_srcroot[ file_no ] != NULL ) {
+			std::error_code ec;
+			std::filesystem::path full_p( base );
+			std::filesystem::path root_p( filelist_srcroot[ file_no ] );
+			std::filesystem::path rel = std::filesystem::relative(
+				full_p.parent_path(), root_p, ec );
+			if ( !ec && !rel.empty() && rel.string() != "." ) {
+				fs_subdir = rel.string();
+			}
+		}
+	}
+
+	int dirlen = ( outdir != NULL ) ? (int)strlen( outdir ) + 1 : 0;
+	int sublen = fs_subdir.empty() ? 0 : (int)fs_subdir.size() + 1;
+	int len = dirlen + sublen + (int)strlen( basename_only )
+	          + ( ( extension == NULL ) ? 0 : (int)strlen( extension ) + 1 ) + 1;
+	char* filename = (char*) calloc( len, sizeof( char ) );
+
+	if ( outdir != NULL ) {
+		strcpy( filename, outdir );
+		int dl = (int)strlen( outdir );
+		if ( dl > 0 && outdir[ dl-1 ] != '/'
+	#if defined(_WIN32) || defined(WIN32)
+			&& outdir[ dl-1 ] != '\\'
+	#endif
+		) strcat( filename, "/" );
+		if ( !fs_subdir.empty() ) {
+			strcat( filename, fs_subdir.c_str() );
+			strcat( filename, "/" );
+			std::error_code ec;
+			std::filesystem::create_directories(
+				std::filesystem::path( filename ), ec );
+		}
+		strcat( filename, basename_only );
+	} else {
+		strcpy( filename, base );
+	}
 	set_extension( filename, extension );
-	
+
 	return filename;
 }
 #endif
