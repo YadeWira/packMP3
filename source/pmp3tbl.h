@@ -9,6 +9,10 @@
 #define A_BLOCK_ANALYSIS	4
 #define A_STATS_ANALYSIS	5
 #define A_PGM_INFO			6
+// v2.0: list/stats subcommands (parsed in initialize_options;
+// implementation lands in Phase 3, currently fall through to A_COMPRESS).
+#define A_LIST				7
+#define A_STATS				8
 
 // mpeg audio type defines
 #define MPEG2_5_LAYER_III	0x1

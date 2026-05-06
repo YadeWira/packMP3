@@ -289,17 +289,27 @@ INTERN int  errorlevel;
 	global variables: settings
 	----------------------------------------------- */
 
-INTERN bool compress_only   = false;	// -c: only compress MP3 files, skip PMP silently
-INTERN bool decompress_only = false;	// -x: only decompress PMP files, skip MP3 silently
+INTERN bool compress_only   = false;	// 'a' subcommand: only compress MP3 files, skip PMP silently
+INTERN bool decompress_only = false;	// 'x' subcommand: only decompress PMP files, skip MP3 silently
+INTERN bool mix_mode        = false;	// 'mix' subcommand: auto-detect (warns if both directions used)
+INTERN bool subcmd_given    = false;	// a subcommand was explicitly provided
 
 #if !defined( BUILD_LIB )
-INTERN int  verbosity  = -1;		// level of verbosity
+INTERN int  verbosity  = 0;			// level of verbosity (0 default; -1 progress bar via -vp)
 INTERN bool overwrite  = false;		// overwrite files yes / no
 INTERN bool wait_exit  = true;		// pause after finished yes / no
 INTERN int  verify_lv  = 0;			// verification level ( none (0), simple (1), detailed output (2) )
 INTERN int  err_tol    = 1;			// error threshold ( proceed on warnings yes (2) / no (1) )
 
 INTERN bool developer      = false;		// allow developers functions yes/no
+INTERN bool disc_meta      = false;		// -d: discard ID3/meta tags
+INTERN bool recursive      = false;		// -r: recurse into subdirectories
+INTERN bool fs_mode        = false;		// -fs: preserve source folder structure under -od when -r expands a dir
+INTERN bool dry_run        = false;		// -dry: simulate without writing output files
+INTERN bool module_mode    = false;		// -module: machine-friendly output (OK/ERROR + time only)
+INTERN bool force_no_color = false;		// --no-color
+INTERN char* outdir        = NULL;		// -od<DIR>: write output files to this directory
+INTERN char** filelist_srcroot = NULL;	// [i] = src dir arg that yielded filelist[i] via -r (for -fs); NULL otherwise
 INTERN int  action         = A_COMPRESS;// what to do with MP3/PMP files
 INTERN FILE*  msgout   = stdout;	// stream for output of messages
 INTERN bool   pipe_on  = false;		// use stdin/stdout instead of filelist
@@ -314,11 +324,12 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 	global variables: info about program
 	----------------------------------------------- */
 
-INTERN const unsigned char appversion = 11;
+INTERN const unsigned char appversion = 20;
+INTERN const unsigned char appversion_legacy_min = 11; // v2.0 decodes back to v1.1 archives
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "03/19/2026";
+INTERN const char*  versiondate  = "05/06/2026";
 INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";
@@ -361,9 +372,14 @@ int main( int argc, char** argv )
 			apptitle, appversion / 10, appversion % 10, subversion, versiondate, author );
 	fprintf( msgout, "Copyright %s\nAll rights reserved\n\n", copyright );
 	
-	// check if user input is wrong, show help screen if it is
+	// check if user input is wrong, show help screen if it is.
+	// v2.0: require a subcommand (a/x/mix/list/stats) unless piped or running
+	// in developer/dev-build mode.
 	if ( ( file_cnt == 0 ) ||
-		( ( !developer ) && ( (action != A_COMPRESS) || (verify_lv > 1) ) ) ) {
+		( ( !developer ) && ( !subcmd_given ) && ( !pipe_on ) ) ||
+		( ( !developer ) && (
+		    (action != A_COMPRESS && action != A_LIST && action != A_STATS) ||
+		    (verify_lv > 1) ) ) ) {
 		show_help();
 		return -1;
 	}
@@ -697,21 +713,64 @@ EXPORT const char* pmplib_short_name( void )
 	
 #if !defined(BUILD_LIB)	
 INTERN void initialize_options( int argc, char** argv )
-{	
+{
 	int tmp_val;
 	char** tmp_flp;
 	int i;
-	
-	
-	// get memory for filelist & preset with NULL
-	filelist = (char**) calloc( argc, sizeof( char* ) );
-	for ( i = 0; i < argc; i++ )
+
+
+	// v2.0: get memory for filelist with generous capacity. Wildcard
+	// expansion on Windows or recursive -r can yield many more files than
+	// argc. 65536 entries covers any realistic batch.
+	const int FILELIST_MAX = 65536;
+	filelist = (char**) calloc( FILELIST_MAX, sizeof( char* ) );
+	filelist_srcroot = (char**) calloc( FILELIST_MAX, sizeof( char* ) );
+	for ( i = 0; i < FILELIST_MAX; i++ ) {
 		filelist[ i ] = NULL;
-	
+		filelist_srcroot[ i ] = NULL;
+	}
+
 	// preset temporary filelist pointer
 	tmp_flp = filelist;
-	
-	
+
+
+	// v2.0: pipe mode bypasses subcommand requirement
+	for ( int pi = 1; pi < argc; pi++ ) {
+		if ( strcmp(argv[pi], "-") == 0 ) { subcmd_given = true; break; }
+	}
+
+	// v2.0: first argument can be a subcommand. Mirrors packJPG v4.0d:
+	//   a    -> compress only (MP3 -> PMP, skip PMP)
+	//   x    -> decompress only (PMP -> MP3, skip MP3)
+	//   mix  -> auto-detect (warns if both directions used)
+	//   list -> list PMP file info (Phase 3 — currently falls back to A_COMPRESS)
+	//   stats-> show MP3 file info (Phase 3 — currently falls back to A_COMPRESS)
+	if ( argc > 1 ) {
+		const char* subcmd = argv[1];
+		if ( strcmp(subcmd, "a") == 0 ) {
+			compress_only = true;
+			subcmd_given = true;
+			argv++; argc--;
+		} else if ( strcmp(subcmd, "x") == 0 ) {
+			decompress_only = true;
+			subcmd_given = true;
+			argv++; argc--;
+		} else if ( strcmp(subcmd, "mix") == 0 ) {
+			mix_mode = true;
+			subcmd_given = true;
+			argv++; argc--;
+		} else if ( strcmp(subcmd, "list") == 0 ) {
+			action = A_LIST;
+			subcmd_given = true;
+			argv++; argc--;
+		} else if ( strcmp(subcmd, "stats") == 0 ) {
+			action = A_STATS;
+			compress_only = true; // stats only inspects MP3 files
+			subcmd_given = true;
+			argv++; argc--;
+		}
+	}
+
 	// read in arguments
 	while ( --argc > 0 ) {
 		argv++;
@@ -719,13 +778,16 @@ INTERN void initialize_options( int argc, char** argv )
 		if ( strcmp((*argv), "-p" ) == 0 ) {
 			err_tol = 2;
 		}
+		else if ( strcmp((*argv), "-d" ) == 0 ) {
+			disc_meta = true;
+		}
 		else if ( strcmp((*argv), "-ver" ) == 0 ) {
 			verify_lv = ( verify_lv < 1 ) ? 1 : verify_lv;
 		}
 		else if ( sscanf( (*argv), "-v%i", &tmp_val ) == 1 ){
 			verbosity = tmp_val;
 			verbosity = ( verbosity < 0 ) ? 0 : verbosity;
-			verbosity = ( verbosity > 2 ) ? 2 : verbosity;			
+			verbosity = ( verbosity > 2 ) ? 2 : verbosity;
 		}
 		else if ( strcmp((*argv), "-vp" ) == 0 ) {
 			verbosity = -1;
@@ -736,11 +798,25 @@ INTERN void initialize_options( int argc, char** argv )
 		else if ( strcmp((*argv), "-o" ) == 0 ) {
 			overwrite = true;
 		}
-		else if ( strcmp((*argv), "-c" ) == 0 ) {
-			compress_only = true;
+		else if ( strcmp((*argv), "--no-color" ) == 0 ) {
+			force_no_color = true;
 		}
-		else if ( strcmp((*argv), "-x" ) == 0 ) {
-			decompress_only = true;
+		else if ( strcmp((*argv), "-r" ) == 0 ) {
+			recursive = true;
+		}
+		else if ( strcmp((*argv), "-fs" ) == 0 ) {
+			fs_mode = true;
+		}
+		else if ( strcmp((*argv), "-dry" ) == 0 ) {
+			dry_run = true;
+		}
+		else if ( strcmp((*argv), "-module" ) == 0 ) {
+			module_mode = true;
+			wait_exit = false;
+			verbosity = 0; // suppress all output except final OK/ERROR line
+		}
+		else if ( strncmp((*argv), "-od", 3 ) == 0 && (*argv)[3] != '\0' ) {
+			outdir = (*argv) + 3; // -odPATH
 		}
 		#if defined(DEV_BUILD)
 		else if ( strcmp((*argv), "-dev") == 0 ) {
@@ -768,7 +844,7 @@ INTERN void initialize_options( int argc, char** argv )
 		else if ( strcmp((*argv), "-pgm") == 0 ) {
 			action = A_PGM_INFO;
 		}
-	   	else if ( ( strcmp((*argv), "-comp") == 0) ) {
+		else if ( ( strcmp((*argv), "-comp") == 0) ) {
 			action = A_COMPRESS;
 		}
 		#endif
@@ -781,12 +857,12 @@ INTERN void initialize_options( int argc, char** argv )
 		else {
 			// if argument is not switch, it's a filename
 			*(tmp_flp++) = *argv;
-		}		
+		}
 	}
-	
+
 	// count number of files (or filenames) in filelist
 	for ( file_cnt = 0; filelist[ file_cnt ] != NULL; file_cnt++ );
-	
+
 	// alloc arrays for error messages and types storage
 	err_list = (char**) calloc( file_cnt, sizeof( char* ) );
 	err_tp   = (int*) calloc( file_cnt, sizeof( int ) );
@@ -1042,20 +1118,38 @@ INTERN inline const char* get_status( bool (*function)() )
 	
 #if !defined(BUILD_LIB)
 INTERN void show_help( void )
-{	
+{
 	fprintf( msgout, "\n" );
-	fprintf( msgout, "GitHub : %s\n", website );
+	fprintf( msgout, "%s -- lossless MP3 compression. Typical reduction: ~16%%.\n", appname );
+	fprintf( msgout, "Compresses MPEG audio (MP3) files to PMP format and decompresses\n" );
+	fprintf( msgout, "them back, with bit-for-bit identical reconstruction.\n" );
 	fprintf( msgout, "\n" );
-	fprintf( msgout, "Usage: %s [switches] [filename(s)]", appname );
+	fprintf( msgout, "Website: %s\n", website );
 	fprintf( msgout, "\n" );
+	fprintf( msgout, "Usage: %s <subcommand> [switches] [filename(s)]\n", appname );
+	fprintf( msgout, "\n" );
+	fprintf( msgout, "Subcommands:\n" );
+	fprintf( msgout, " a         compress only: process MP3 files, skip PMP\n" );
+	fprintf( msgout, " x         decompress only: process PMP files, skip MP3\n" );
+	fprintf( msgout, " mix       mixed mode: auto-detect (warns if both directions used)\n" );
+	fprintf( msgout, " list      list PMP file info without decompressing (Phase 3 — not yet implemented)\n" );
+	fprintf( msgout, " stats     show MP3 file info (size, layer, channels) without compressing (Phase 3)\n" );
+	fprintf( msgout, "\n" );
+	fprintf( msgout, "Switches:\n" );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, " [-ver]   verify files after processing\n" );
 	fprintf( msgout, " [-v?]    set level of verbosity (max: 2) (def: 0)\n" );
+	fprintf( msgout, " [-vp]    progress bar mode (overrides -v?)\n" );
 	fprintf( msgout, " [-np]    no pause after processing files\n" );
+	fprintf( msgout, " [--no-color] disable ANSI color output (also respected via NO_COLOR env var)\n" );
 	fprintf( msgout, " [-o]     overwrite existing files\n" );
-	fprintf( msgout, " [-c]     compress only: process MP3 files, skip PMP\n" );
-	fprintf( msgout, " [-x]     decompress only: process PMP files, skip MP3\n" );
+	fprintf( msgout, " [-r]     recurse into subdirectories\n" );
+	fprintf( msgout, " [-fs]    preserve source folder structure under -od (use with -r)\n" );
+	fprintf( msgout, " [-dry]   dry run: simulate without writing output files\n" );
+	fprintf( msgout, " [-module] machine-friendly output: OK/ERROR + time only\n" );
+	fprintf( msgout, " [-od<p>] write output files to directory <p>\n" );
 	fprintf( msgout, " [-p]     proceed on warnings\n" );
+	fprintf( msgout, " [-d]     discard meta-info (ID3 tags)\n" );
 	#if defined(DEV_BUILD)
 	if ( developer ) {
 	fprintf( msgout, "\n" );
@@ -1067,8 +1161,10 @@ INTERN void show_help( void )
 	}
 	#endif
 	fprintf( msgout, "\n" );
-	fprintf( msgout, "Examples: \"%s -v1 -o luka.%s\"\n", appname, pmp_ext );
-	fprintf( msgout, "          \"%s -p *.%s\"\n", appname, mp3_ext );	
+	fprintf( msgout, "Examples: \"%s a -v1 -o luka.%s\"\n", appname, mp3_ext );
+	fprintf( msgout, "          \"%s a -p *.%s\"\n", appname, mp3_ext );
+	fprintf( msgout, "          \"%s x archive.%s\"\n", appname, pmp_ext );
+	fprintf( msgout, "          \"%s mix -r -od/out folder/\"\n", appname );
 }
 #endif
 
@@ -2070,9 +2166,16 @@ INTERN bool uncompress_pmp( void )
 	
 	// version number
 	str_in->read( &hcode, 1, 1 );
-	// compare version number
-	if ( hcode != appversion ) {
+	// v2.0: accept v1.1 (byte 0x0B) and v2.0 (byte 0x14) archives.
+	// Format payload after the version byte is unchanged across the bump.
+	if ( hcode != appversion && hcode < appversion_legacy_min ) {
 		snprintf( errormessage, MSG_SIZE, "incompatible file, use %s v%i.%i",
+			appname, hcode / 10, hcode % 10 );
+		errorlevel = 2;
+		return false;
+	}
+	if ( hcode > appversion ) {
+		snprintf( errormessage, MSG_SIZE, "file from a newer %s build (v%i.%i); upgrade to decode",
 			appname, hcode / 10, hcode % 10 );
 		errorlevel = 2;
 		return false;
