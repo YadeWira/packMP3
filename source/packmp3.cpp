@@ -3,13 +3,22 @@
 #include <ctime>
 #include <cstdio>
 
-// v2.0: std::filesystem for -r recursion / -fs folder-structure preservation.
+// v1.2 -th batch threading: process independent files concurrently.
+#if !defined(BUILD_LIB)
+#  include <thread>
+#  include <atomic>
+#  include <mutex>
+#  include <chrono>
+#  include <csignal>
+#endif
+
+// v1.2: std::filesystem for -r recursion / -fs folder-structure preservation.
 #include <filesystem>
 #include <vector>
 #include <utility>
 #include <system_error>
 
-// v2.0 color support: needs isatty/fileno on POSIX and console-mode APIs on Windows.
+// v1.2 color support: needs isatty/fileno on POSIX and console-mode APIs on Windows.
 #if defined(_WIN32) || defined(WIN32)
 #  include <windows.h>
 #else
@@ -31,8 +40,17 @@
 	#include "packmp3lib.h"
 #endif
 
+// v1.2: on mingw the CRT does not expand command-line wildcards by default, so
+// "packMP3 a *.mp3" was passed through literally on Windows. Force globbing on to
+// match the documented wildcard support and Linux shell behaviour.
+#if defined(__MINGW32__) && !defined(BUILD_LIB)
+extern "C" { int _dowildcard = -1; }
+#endif
+
 #define INTERN static
-#define THREAD_LOCAL static  // placeholder for future thread-local state
+// v1.2: per-file mutable state is thread-local so -th can process independent
+// files concurrently without data races. Config/shared state stays plain static.
+#define THREAD_LOCAL static thread_local
 
 #define INIT_MODEL_S(a,b,c) new model_s( a, b, c, 511 )
 #define INIT_MODEL_B(a,b)   new model_b( a, b, 511 )
@@ -111,6 +129,10 @@ INTERN inline granuleData*** mp3_decode_frame( huffman_reader* dec, mp3Frame* fr
 	
 INTERN inline bool pmp_write_header( iostream* str );
 INTERN inline bool pmp_read_header( iostream* str );
+#if !defined(BUILD_LIB)
+INTERN bool list_pmp( void );	// v1.2 'list' subcommand: PMP info, no decode
+INTERN bool stats_mp3( void );	// v1.2 'stats' subcommand: MP3 info, no compress
+#endif
 #if !defined( STORE_ID3 )
 INTERN inline bool pmp_encode_id3( aricoder* enc );
 INTERN inline bool pmp_decode_id3( aricoder* dec );
@@ -209,79 +231,79 @@ INTERN int lib_out_type = -1;
 	global variables: data storage
 	----------------------------------------------- */
 
-INTERN mp3Frame*      firstframe		=	NULL;	// first physical frame
-INTERN mp3Frame*      lastframe			=	NULL;	// last physical frame
-INTERN unsigned char* main_data			=	NULL;	// (mainly) huffman coded data
-INTERN unsigned char* data_before		=	NULL;	// data before (should be ID3v2 tag)
-INTERN unsigned char* data_after		=	NULL;	// data after (should be ID3v1 or ID3v2 tag)
-INTERN unsigned char* unmute_data		=	NULL;	// fix data (to reverse muted frames)
-INTERN int            main_data_size	=     0 ;	// size of main data
-INTERN int            data_before_size	=     0 ;	// size of data before
-INTERN int            data_after_size	=     0 ;   // size of data after
-INTERN int            unmute_data_size	=     0 ;   // size of fix data
-INTERN int            n_bad_first		=     0 ;   // # of bad first frames (should be zero!)
-INTERN unsigned char* gg_context[2]	= {NULL};	// universal context based on global gain
+THREAD_LOCAL mp3Frame*      firstframe		=	NULL;	// first physical frame
+THREAD_LOCAL mp3Frame*      lastframe			=	NULL;	// last physical frame
+THREAD_LOCAL unsigned char* main_data			=	NULL;	// (mainly) huffman coded data
+THREAD_LOCAL unsigned char* data_before		=	NULL;	// data before (should be ID3v2 tag)
+THREAD_LOCAL unsigned char* data_after		=	NULL;	// data after (should be ID3v1 or ID3v2 tag)
+THREAD_LOCAL unsigned char* unmute_data		=	NULL;	// fix data (to reverse muted frames)
+THREAD_LOCAL int            main_data_size	=     0 ;	// size of main data
+THREAD_LOCAL int            data_before_size	=     0 ;	// size of data before
+THREAD_LOCAL int            data_after_size	=     0 ;   // size of data after
+THREAD_LOCAL int            unmute_data_size	=     0 ;   // size of fix data
+THREAD_LOCAL int            n_bad_first		=     0 ;   // # of bad first frames (should be zero!)
+THREAD_LOCAL unsigned char* gg_context[2]	= {NULL};	// universal context based on global gain
 
 /* -----------------------------------------------
 	global variables: info about audio file
 	----------------------------------------------- */
 
-INTERN int  g_nframes     =   0;  // number of frames
-INTERN int  g_nchannels   =   0;  // number of channels
-INTERN int  g_samplerate  =   0;  // sample rate
-INTERN int  g_bitrate     =   0;  // bit rate - global or zero for vbr
+THREAD_LOCAL int  g_nframes     =   0;  // number of frames
+THREAD_LOCAL int  g_nchannels   =   0;  // number of channels
+THREAD_LOCAL int  g_samplerate  =   0;  // sample rate
+THREAD_LOCAL int  g_bitrate     =   0;  // bit rate - global or zero for vbr
 
 
 /* -----------------------------------------------
 	global variables: frame analysis info
 	----------------------------------------------- */
 
-INTERN char i_mpeg			= -1; // mpeg - non changing
-INTERN char i_layer			= -1; // layer - non changing
-INTERN char i_samplerate	= -1; // sample rate - non changing
-INTERN char i_bitrate		= -1; // bit rate - value or -1 (variable)
-INTERN char i_protection	= -1; // checksum - for all (1), none (0) or some (-1) frames
-INTERN char i_padding		= -1; // padding - for all (1), none (0) or some (-1) frames
-INTERN char i_privbit		= -1; // private bit - value or -1 (variable)
-INTERN char i_channels		= -1; // channel mode - non changing
-INTERN char i_stereo_ms		= -1; // ms stereo - for all (1), none (0) or some (-1) frames
-INTERN char i_stereo_int	= -1; // int stereo - for all (1), none (0) or some (-1) frames
-INTERN char i_copyright		= -1; // copyright bit - value or -1 (variable)
-INTERN char i_original		= -1; // original bit - value or -1 (variable)
-INTERN char i_emphasis		= -1; // emphasis - value or -1 (variable)
-INTERN char i_padbits		= -1; // side info padding bits - value or -1 (variable)
-INTERN char i_bit_res		= -1; // bit reservoir - is used (1) or not used (0)
-INTERN char i_share			= -1; // scalefactor sharing - is used (1) or not used (0)
-INTERN char i_sblocks		= -1; // special blocks - are used (1) or not used (0)
-INTERN char i_mixed			= -1; // mixed blocks - are used (1) or not used (0)
-INTERN char i_preemphasis	= -1; // preemphasis - value or -1 (variable)
-INTERN char i_coarse		= -1; // coarse scalefactors - value or -1 (variable)
-INTERN char i_sbgain		= -1; // subblock gain - used properly (1), not used (0) or used for non-short (-1)
-INTERN char i_aux_h			= -1; // auxiliary data handling - none (0), at begin and end (1), between frames (-1)
-INTERN char i_sb_diff		= -1; // special blocks diffs between ch0 and ch1 - none (0) or some (-1)
+THREAD_LOCAL char i_mpeg			= -1; // mpeg - non changing
+THREAD_LOCAL char i_layer			= -1; // layer - non changing
+THREAD_LOCAL char i_samplerate	= -1; // sample rate - non changing
+THREAD_LOCAL char i_bitrate		= -1; // bit rate - value or -1 (variable)
+THREAD_LOCAL char i_protection	= -1; // checksum - for all (1), none (0) or some (-1) frames
+THREAD_LOCAL char i_padding		= -1; // padding - for all (1), none (0) or some (-1) frames
+THREAD_LOCAL char i_privbit		= -1; // private bit - value or -1 (variable)
+THREAD_LOCAL char i_channels		= -1; // channel mode - non changing
+THREAD_LOCAL char i_stereo_ms		= -1; // ms stereo - for all (1), none (0) or some (-1) frames
+THREAD_LOCAL char i_stereo_int	= -1; // int stereo - for all (1), none (0) or some (-1) frames
+THREAD_LOCAL char i_copyright		= -1; // copyright bit - value or -1 (variable)
+THREAD_LOCAL char i_original		= -1; // original bit - value or -1 (variable)
+THREAD_LOCAL char i_emphasis		= -1; // emphasis - value or -1 (variable)
+THREAD_LOCAL char i_padbits		= -1; // side info padding bits - value or -1 (variable)
+THREAD_LOCAL char i_bit_res		= -1; // bit reservoir - is used (1) or not used (0)
+THREAD_LOCAL char i_share			= -1; // scalefactor sharing - is used (1) or not used (0)
+THREAD_LOCAL char i_sblocks		= -1; // special blocks - are used (1) or not used (0)
+THREAD_LOCAL char i_mixed			= -1; // mixed blocks - are used (1) or not used (0)
+THREAD_LOCAL char i_preemphasis	= -1; // preemphasis - value or -1 (variable)
+THREAD_LOCAL char i_coarse		= -1; // coarse scalefactors - value or -1 (variable)
+THREAD_LOCAL char i_sbgain		= -1; // subblock gain - used properly (1), not used (0) or used for non-short (-1)
+THREAD_LOCAL char i_aux_h			= -1; // auxiliary data handling - none (0), at begin and end (1), between frames (-1)
+THREAD_LOCAL char i_sb_diff		= -1; // special blocks diffs between ch0 and ch1 - none (0) or some (-1)
 	
 
 /* -----------------------------------------------
 	global variables: info about files
 	----------------------------------------------- */
 	
-INTERN char*  mp3filename = NULL;	// name of MP3 file
-INTERN char*  pmpfilename = NULL;	// name of PMP file
-INTERN int    mp3filesize;			// size of MP3 file
-INTERN int    pmpfilesize;			// size of PMP file
-INTERN int    filetype;				// type of current file
-INTERN iostream* str_in  = NULL;	// input stream
-INTERN iostream* str_out = NULL;	// output stream
+THREAD_LOCAL char*  mp3filename = NULL;	// name of MP3 file
+THREAD_LOCAL char*  pmpfilename = NULL;	// name of PMP file
+THREAD_LOCAL int    mp3filesize;			// size of MP3 file
+THREAD_LOCAL int    pmpfilesize;			// size of PMP file
+THREAD_LOCAL int    filetype;				// type of current file
+THREAD_LOCAL iostream* str_in  = NULL;	// input stream
+THREAD_LOCAL iostream* str_out = NULL;	// output stream
 
 #if !defined(BUILD_LIB)
-INTERN iostream* str_str = NULL;	// storage stream
+THREAD_LOCAL iostream* str_str = NULL;	// storage stream
 
-INTERN char** filelist = NULL;		// list of files to process 
-INTERN int    file_cnt = 0;			// count of files in list
-INTERN int    file_no  = 0;			// number of current file
+INTERN char** filelist = NULL;		// list of files to process (shared, read-only during run)
+INTERN int    file_cnt = 0;			// count of files in list (shared)
+THREAD_LOCAL int file_no = 0;		// number of current file (per-thread index into filelist)
 
-INTERN char** err_list = NULL;		// list of error messages 
-INTERN int*   err_tp   = NULL;		// list of error types
+INTERN char** err_list = NULL;		// list of error messages (shared; each thread writes a unique slot)
+INTERN int*   err_tp   = NULL;		// list of error types (shared; unique slot per file)
 #endif
 
 
@@ -289,9 +311,9 @@ INTERN int*   err_tp   = NULL;		// list of error types
 	global variables: messages
 	----------------------------------------------- */
 
-INTERN char errormessage [ MSG_SIZE ];
-INTERN bool (*errorfunction)();
-INTERN int  errorlevel;
+THREAD_LOCAL char errormessage [ MSG_SIZE ];
+THREAD_LOCAL bool (*errorfunction)();
+THREAD_LOCAL int  errorlevel;
 // meaning of errorlevel:
 // -1 -> wrong input
 // 0 -> no error
@@ -326,7 +348,8 @@ INTERN char* outdir        = NULL;		// -od<DIR>: write output files to this dire
 INTERN char** filelist_srcroot = NULL;	// [i] = src dir arg that yielded filelist[i] via -r (for -fs); NULL otherwise
 INTERN int  action         = A_COMPRESS;// what to do with MP3/PMP files
 INTERN FILE*  msgout   = stdout;	// stream for output of messages
-INTERN bool   pipe_on  = false;		// use stdin/stdout instead of filelist
+INTERN int    num_threads = 1;		// -th<N>: worker threads for batch (1 = single-threaded)
+THREAD_LOCAL bool pipe_on  = false;	// use stdin/stdout instead of filelist (per-thread)
 #else
 INTERN int  err_tol    = 1;			// error threshold ( proceed on warnings yes (2) / no (1) )
 INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
@@ -338,12 +361,12 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 	global variables: info about program
 	----------------------------------------------- */
 
-INTERN const unsigned char appversion = 20;
-INTERN const unsigned char appversion_legacy_min = 11; // v2.0 decodes back to v1.1 archives
+INTERN const unsigned char appversion = 12;
+INTERN const unsigned char appversion_legacy_min = 11; // v1.2 decodes back to v1.1 archives
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "05/06/2026";
+INTERN const char*  versiondate  = "06/14/2026";
 INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";
@@ -354,7 +377,7 @@ INTERN const char*  mp3_ext      = "mp3";
 INTERN const char   pmp_magic[] = { 'M', 'S' };
 
 
-// ─── v2.0 Color support ──────────────────────────────────────────────────────
+// ─── v1.2 Color support ──────────────────────────────────────────────────────
 // ANSI escape codes — empty strings when colors are disabled.
 // Call init_colors() once at startup (no-op in library builds).
 #if !defined(BUILD_LIB)
@@ -401,12 +424,16 @@ static void init_colors( void )
 int main( int argc, char** argv )
 {	
 	snprintf( errormessage, MSG_SIZE, "no errormessage specified" );
-	
-	clock_t begin, end;
-	
+
+	// wall-clock for the overall run: clock() sums CPU across threads, so it
+	// overstates time in -th mode. Use steady_clock for the summary total.
+	std::chrono::steady_clock::time_point wall_begin, wall_end;
+
 	int error_cnt = 0;
 	int warn_cnt  = 0;
-	
+	int acc_mp3_cnt = 0;	// files compressed (MP3 -> PMP)
+	int acc_pmp_cnt = 0;	// files decompressed (PMP -> MP3)
+
 	double acc_mp3size = 0;
 	double acc_pmpsize = 0;
 	
@@ -420,7 +447,7 @@ int main( int argc, char** argv )
 	// read options from command line
 	initialize_options( argc, argv );
 
-	// v2.0: enable ANSI colors if appropriate (after parsing so --no-color
+	// v1.2: enable ANSI colors if appropriate (after parsing so --no-color
 	// and -module are honoured). module_mode disables colors automatically
 	// to keep machine-friendly output clean.
 	if ( module_mode ) force_no_color = true;
@@ -435,7 +462,7 @@ int main( int argc, char** argv )
 	}
 
 	// check if user input is wrong, show help screen if it is.
-	// v2.0: require a subcommand (a/x/mix/list/stats) unless piped or running
+	// v1.2: require a subcommand (a/x/mix/list/stats) unless piped or running
 	// in developer/dev-build mode.
 	if ( ( file_cnt == 0 ) ||
 		( ( !developer ) && ( !subcmd_given ) && ( !pipe_on ) ) ||
@@ -450,73 +477,143 @@ int main( int argc, char** argv )
 	reset_buffers();
 	
 	// process file(s) - this is the main function routine
-	begin = clock();
-	for ( file_no = 0; file_no < file_cnt; file_no++ ) {	
-		// process current file
-		process_ui();
-		// store error message and type if any
+	wall_begin = std::chrono::steady_clock::now();
+
+	// tally one processed file's result into the accumulators. Called from the
+	// single-threaded loop directly, and from each worker under a lock in -th.
+	auto tally = [&]( int fn ) {
 		if ( errorlevel > 0 ) {
-			err_list[ file_no ] = (char*) calloc( MSG_SIZE, sizeof( char ) );
-			err_tp[ file_no ] = errorlevel;
-			if ( err_list[ file_no ] != NULL )
-				strcpy( err_list[ file_no ], errormessage );
+			err_list[ fn ] = (char*) calloc( MSG_SIZE, sizeof( char ) );
+			err_tp[ fn ] = errorlevel;
+			if ( err_list[ fn ] != NULL )
+				strcpy( err_list[ fn ], errormessage );
 		}
-		// count errors / warnings / file sizes
 		if ( errorlevel >= err_tol ) error_cnt++;
 		else {
 			if ( errorlevel == 1 ) warn_cnt++;
 			acc_mp3size += mp3filesize;
 			acc_pmpsize += pmpfilesize;
+			if ( action == A_COMPRESS ) {
+				if ( filetype == F_MP3 )      acc_mp3_cnt++;
+				else if ( filetype == F_PMP ) acc_pmp_cnt++;
+			}
 		}
+	};
+
+	if ( num_threads <= 1 ) {
+		// --- single-threaded (original behaviour) ---
+		for ( file_no = 0; file_no < file_cnt; file_no++ ) {
+			process_ui();
+			tally( file_no );
+		}
+	} else {
+		// --- multi-threaded batch (-th) ---
+		// Each file is fully independent; per-file state is THREAD_LOCAL.
+		// Force verification: a missed thread_local would corrupt output, and
+		// verify catches it (compress→decompress→compare) before it's written.
+		if ( verify_lv < 1 ) verify_lv = 1;
+		if ( num_threads > file_cnt ) num_threads = ( file_cnt > 0 ) ? file_cnt : 1;
+		if ( !module_mode )
+			fprintf( msgout, "Using %i thread(s), verify enabled\n\n", num_threads );
+
+		std::atomic<int> next_file( 0 );
+		std::mutex mtx;
+		int done = 0, spin = 0;
+
+		auto worker = [&]() {
+			int fn;
+			while ( ( fn = next_file.fetch_add( 1 ) ) < file_cnt ) {
+				file_no = fn;          // THREAD_LOCAL: this thread's current file
+				process_ui();
+				std::lock_guard<std::mutex> lk( mtx );
+				tally( fn );
+				done++;
+				if ( !module_mode ) {
+					const char* sp = "|/-\\";
+					fprintf( msgout, "\r  %c  %i / %i processed", sp[ spin++ & 3 ], done, file_cnt );
+					fflush( msgout );
+				}
+			}
+		};
+
+		std::vector<std::thread> pool;
+		pool.reserve( num_threads );
+		for ( int i = 0; i < num_threads; i++ ) pool.emplace_back( worker );
+		for ( auto& t : pool ) t.join();
+		if ( !module_mode ) fprintf( msgout, "\r%*s\r", 32, "" ); // clear bar line
 	}
-	end = clock();
-	
-	// errors summary: only needed for -v2 or progress bar
+
+	wall_end = std::chrono::steady_clock::now();
+
+	// module mode: single machine-friendly line, nothing else
+	if ( module_mode ) {
+		total = std::chrono::duration<double>( wall_end - wall_begin ).count();
+		if ( error_cnt == 0 ) fprintf( msgout, "OK %.2f\n", total );
+		else                  fprintf( msgout, "ERROR %i %.2f\n", error_cnt, total );
+		return ( error_cnt == 0 ) ? 0 : -1;
+	}
+
+	// errors summary: only needed for -v2 or progress bar (inline per-file at v0/v1)
 	if ( ( verbosity == -1 ) || ( verbosity == 2 ) ) {
 		// print summary of errors to screen
 		if ( error_cnt > 0 ) {
-			fprintf( stderr, "\n\nfiles with errors:\n" );
+			fprintf( stderr, "\n\n%sfiles with errors:%s\n", COL_BRED, COL_RESET );
 			fprintf( stderr, "------------------\n" );
 			for ( file_no = 0; file_no < file_cnt; file_no++ ) {
 				if ( err_tp[ file_no ] >= err_tol ) {
-					fprintf( stderr, "%s (%s)\n", filelist[ file_no ], err_list[ file_no ] );
+					fprintf( stderr, "%s%s%s (%s)\n", COL_BRED, filelist[ file_no ], COL_RESET, err_list[ file_no ] );
 				}
 			}
 		}
 		// print summary of warnings to screen
 		if ( warn_cnt > 0 ) {
-			fprintf( stderr, "\n\nfiles with warnings:\n" );
+			fprintf( stderr, "\n\n%sfiles with warnings:%s\n", COL_BYELLOW, COL_RESET );
 			fprintf( stderr, "------------------\n" );
 			for ( file_no = 0; file_no < file_cnt; file_no++ ) {
 				if ( err_tp[ file_no ] == 1 ) {
-					fprintf( stderr, "%s (%s)\n", filelist[ file_no ], err_list[ file_no ] );
+					fprintf( stderr, "%s%s%s (%s)\n", COL_BYELLOW, filelist[ file_no ], COL_RESET, err_list[ file_no ] );
 				}
 			}
 		}
 	}
-	
+
+	// mixed-mode warning: both directions happened in one run
+	if ( mix_mode && acc_mp3_cnt > 0 && acc_pmp_cnt > 0 && verbosity >= 0 ) {
+		fprintf( msgout, "\n%s[WARNING]%s Mixed mode: compressed %i MP3 and decompressed %i PMP files.\n",
+			COL_BYELLOW, COL_RESET, acc_mp3_cnt, acc_pmp_cnt );
+		fprintf( msgout, "  Running 'mix' on already-processed files can undo previous work.\n" );
+		fprintf( msgout, "  Use 'a' (compress only) or 'x' (decompress only) for safer operation.\n" );
+	}
+
 	// show statistics
-	fprintf( msgout,  "\n\n-> %i file(s) processed, %i error(s), %i warning(s)\n",
-		file_cnt, error_cnt, warn_cnt );
-	if ( ( file_cnt > error_cnt ) && ( verbosity != 0 ) && ( action == A_COMPRESS ) ) {
+	fprintf( msgout,  "\n%i file(s)  %i ok  %i error(s)  %i warning(s)\n",
+		file_cnt, file_cnt - error_cnt, error_cnt, warn_cnt );
+	if ( acc_mp3_cnt > 0 || acc_pmp_cnt > 0 ) {
+		fprintf( msgout, " " );
+		bool prev = false;
+		if ( acc_mp3_cnt > 0 ) { fprintf( msgout, "compressed: %i MP3", acc_mp3_cnt ); prev = true; }
+		if ( acc_pmp_cnt > 0 ) { if ( prev ) fprintf( msgout, "  " ); fprintf( msgout, "decompressed: %i PMP", acc_pmp_cnt ); }
+		fprintf( msgout, "\n" );
+	}
+	if ( ( file_cnt > error_cnt ) && ( verbosity != 0 ) && ( acc_mp3size > 0 || acc_pmpsize > 0 ) ) {
 		acc_mp3size /= 1024.0; acc_pmpsize /= 1024.0;
-		total = (double) ( end - begin ) / CLOCKS_PER_SEC; 
+		total = std::chrono::duration<double>( wall_end - wall_begin ).count();
 		kbps  = ( total > 0 ) ? ( acc_mp3size / total ) : acc_mp3size;
 		cr    = ( acc_mp3size > 0 ) ? ( 100.0 * acc_pmpsize / acc_mp3size ) : 0;
-		
-		fprintf( msgout,  " -------------------------------- \n" );
+
+		fprintf( msgout,  "%s --------------------------------- %s\n", COL_GRAY, COL_RESET );
 		if ( total >= 0 ) {
-			fprintf( msgout,  " total time        : %8.2f sec\n", total );
-			fprintf( msgout,  " avrg. kbyte per s : %8i kbps\n", kbps );
+			fprintf( msgout,  " time    %8.2f sec\n", total );
+			fprintf( msgout,  " speed   %8i KB/s\n", kbps );
 		}
 		else {
-			fprintf( msgout,  " total time        : %8s sec\n", "N/A" );
-			fprintf( msgout,  " avrg. kbyte per s : %8s kbps\n", "N/A" );
+			fprintf( msgout,  " time    %8s sec\n", "N/A" );
+			fprintf( msgout,  " speed   %8s KB/s\n", "N/A" );
 		}
-		fprintf( msgout,  " avrg. comp. ratio : %8.2f %%\n", cr );		
-		fprintf( msgout,  " -------------------------------- \n" );
+		fprintf( msgout,  " ratio   %8.2f %%\n", cr );
+		fprintf( msgout,  "%s --------------------------------- %s\n", COL_GRAY, COL_RESET );
 	}
-	
+
 	// pause before exit
 	if ( wait_exit && ( msgout != stderr ) ) {
 		fprintf( msgout, "\n\n< press ENTER >\n" );
@@ -770,7 +867,7 @@ EXPORT const char* pmplib_short_name( void )
 
 
 /* -----------------------------------------------
-	v2.0 helpers for -r recursion + -fs folder-structure preservation
+	v1.2 helpers for -r recursion + -fs folder-structure preservation
 	----------------------------------------------- */
 
 #if !defined(BUILD_LIB)
@@ -807,7 +904,7 @@ INTERN void initialize_options( int argc, char** argv )
 	int i;
 
 
-	// v2.0: get memory for filelist with generous capacity. Wildcard
+	// v1.2: get memory for filelist with generous capacity. Wildcard
 	// expansion on Windows or recursive -r can yield many more files than
 	// argc. 65536 entries covers any realistic batch.
 	const int FILELIST_MAX = 65536;
@@ -822,17 +919,17 @@ INTERN void initialize_options( int argc, char** argv )
 	tmp_flp = filelist;
 
 
-	// v2.0: pipe mode bypasses subcommand requirement
+	// v1.2: pipe mode bypasses subcommand requirement
 	for ( int pi = 1; pi < argc; pi++ ) {
 		if ( strcmp(argv[pi], "-") == 0 ) { subcmd_given = true; break; }
 	}
 
-	// v2.0: first argument can be a subcommand. Mirrors packJPG v4.0d:
+	// v1.2: first argument can be a subcommand. Mirrors packJPG v4.0d:
 	//   a    -> compress only (MP3 -> PMP, skip PMP)
 	//   x    -> decompress only (PMP -> MP3, skip MP3)
 	//   mix  -> auto-detect (warns if both directions used)
-	//   list -> list PMP file info (Phase 3 — currently falls back to A_COMPRESS)
-	//   stats-> show MP3 file info (Phase 3 — currently falls back to A_COMPRESS)
+	//   list -> list PMP file info without decompressing (PMP only)
+	//   stats-> show MP3 file info without compressing (MP3 only)
 	if ( argc > 1 ) {
 		const char* subcmd = argv[1];
 		if ( strcmp(subcmd, "a") == 0 ) {
@@ -849,6 +946,7 @@ INTERN void initialize_options( int argc, char** argv )
 			argv++; argc--;
 		} else if ( strcmp(subcmd, "list") == 0 ) {
 			action = A_LIST;
+			decompress_only = true; // list only inspects PMP files; skip MP3
 			subcmd_given = true;
 			argv++; argc--;
 		} else if ( strcmp(subcmd, "stats") == 0 ) {
@@ -906,6 +1004,16 @@ INTERN void initialize_options( int argc, char** argv )
 		else if ( strncmp((*argv), "-od", 3 ) == 0 && (*argv)[3] != '\0' ) {
 			outdir = (*argv) + 3; // -odPATH
 		}
+		else if ( strncmp((*argv), "-th", 3 ) == 0 ) {
+			// -th<N> batch threads; -th or -th0 => auto (hardware concurrency)
+			int cores = (int) std::thread::hardware_concurrency();
+			if ( (*argv)[3] == '\0' ) {
+				num_threads = ( cores > 1 ) ? cores : 1;
+			} else if ( sscanf( (*argv) + 3, "%i", &tmp_val ) == 1 ) {
+				num_threads = ( tmp_val == 0 ) ? ( ( cores > 1 ) ? cores : 1 )
+				            : ( ( tmp_val < 1 ) ? 1 : tmp_val );
+			}
+		}
 		#if defined(DEV_BUILD)
 		else if ( strcmp((*argv), "-dev") == 0 ) {
 			developer = true;
@@ -948,7 +1056,7 @@ INTERN void initialize_options( int argc, char** argv )
 		}
 	}
 
-	// v2.0: -r expansion. Replace any directory entries in filelist with
+	// v1.2: -r expansion. Replace any directory entries in filelist with
 	// the .mp3/.pmp files they contain (recursively). Tracks src_root in
 	// filelist_srcroot so -fs can mirror the relative subdir under -od.
 	if ( recursive ) {
@@ -1021,9 +1129,12 @@ INTERN void process_ui( void )
 	mp3filesize = 0;
 	pmpfilesize = 0;	
 	#if !defined(DEV_BUILD)
-	action = A_COMPRESS;
+	// v1.2: preserve the list/stats subcommands; everything else is compress.
+	// Single-thread only: in -th, 'action' is shared and already fixed by the
+	// subcommand, so writing it per-file would be a (benign-valued) data race.
+	if ( num_threads <= 1 && action != A_LIST && action != A_STATS ) action = A_COMPRESS;
 	#endif
-	
+
 	// compare file name, set pipe if needed
 	if ( ( strcmp( filelist[ file_no ], "-" ) == 0 ) && ( action == A_COMPRESS ) ) {
 		pipe_on = true;
@@ -1033,16 +1144,21 @@ INTERN void process_ui( void )
 		pipe_on = false;
 	}
 	
-	if ( verbosity >= 0 ) { // standard UI
-		fprintf( msgout,  "\nProcessing file %i of %i \"%s\" -> ",
-					file_no + 1, file_cnt, filelist[ file_no ] );
-		
-		if ( verbosity > 1 )
-			fprintf( msgout,  "\n----------------------------------------" );
-		
+	if ( verbosity < 0 && num_threads <= 1 ) { // progress bar UI (single-thread only)
+		// update progress message
+		fprintf( msgout, "Processing file %2i of %2i ", file_no + 1, file_cnt );
+		progress_bar( file_no, file_cnt );
+		fprintf( msgout, "\r" );
+		execute( check_file );
+	}
+	else { // standard UI (verbosity 0/1/2; module_mode and -th run silently)
+		if ( verbosity > 1 && !module_mode && num_threads <= 1 )
+			fprintf( msgout,  "\nProcessing file %i of %i \"%s\"\n----------------------------------------",
+						file_no + 1, file_cnt, filelist[ file_no ] );
+
 		// check input file and determine filetype
 		execute( check_file );
-		
+
 		// get specific action message
 		if ( filetype == F_UNK ) actionmsg = "unknown filetype";
 		else switch ( action ) {
@@ -1053,18 +1169,28 @@ INTERN void process_ui( void )
 			case A_FILE_ANALYSIS: actionmsg = "Analysing files"; break;
 			case A_BLOCK_ANALYSIS: actionmsg = "Analysing frames"; break;
 			case A_STATS_ANALYSIS: actionmsg = "Analysing statistics"; break;
+			case A_LIST: actionmsg = "Listing"; break;
+			case A_STATS: actionmsg = "Analyzing"; break;
 		}
-		
-		if ( verbosity < 2 ) fprintf( msgout, "%s -> ", actionmsg );
+
+		if ( !module_mode && num_threads <= 1 && filetype != F_UNK ) {
+			// list/stats print the filename as a header; their info follows below
+			if ( action == A_LIST || action == A_STATS )
+				fprintf( msgout, "\n%s\n", filelist[ file_no ] );
+			else if ( verbosity < 2 )
+				fprintf( msgout, "%s%s%s -> ", COL_CYAN, actionmsg, COL_RESET );
+		}
 	}
-	else { // progress bar UI
-		// update progress message
-		fprintf( msgout, "Processing file %2i of %2i ", file_no + 1, file_cnt );
-		progress_bar( file_no, file_cnt );
-		fprintf( msgout, "\r" );
-		execute( check_file );
+	if ( num_threads <= 1 ) fflush( msgout );
+
+	// silent skip: check_file set F_UNK with no error → wrong file type for the
+	// chosen subcommand (compress-only saw PMP, decompress-only/list saw MP3,
+	// stats saw PMP). Nothing to process, no result line, no output written.
+	if ( filetype == F_UNK && errorlevel == 0 ) {
+		if ( str_in  != NULL ) { delete( str_in  ); str_in  = NULL; }
+		if ( str_out != NULL ) { delete( str_out ); str_out = NULL; }
+		return;
 	}
-	fflush( msgout );
 	
 	
 	// main function routine
@@ -1077,8 +1203,10 @@ INTERN void process_ui( void )
 	if ( str_in  != NULL ) { delete( str_in  ); str_in  = NULL; }
 	if ( str_out != NULL ) { delete( str_out ); str_out = NULL; }
 	if ( str_str != NULL ) { delete( str_str ); str_str = NULL; }
-	// delete if broken or if output not needed
-	if ( ( !pipe_on ) && ( ( errorlevel >= err_tol ) || ( action != A_COMPRESS ) ) ) {
+	// delete if broken or if output not needed. list/stats create no output
+	// file, and -dry only ever wrote to memory, so skip both.
+	if ( ( !pipe_on ) && ( action != A_LIST ) && ( action != A_STATS ) && ( !dry_run )
+	     && ( ( errorlevel >= err_tol ) || ( action != A_COMPRESS ) ) ) {
 		if ( filetype == F_MP3 ) {
 			if ( file_exists( pmpfilename ) ) remove( pmpfilename );
 		} else if ( filetype == F_PMP ) {
@@ -1094,28 +1222,58 @@ INTERN void process_ui( void )
 	cr    = ( mp3filesize > 0 ) ? ( 100.0 * pmpfilesize / mp3filesize ) : 0;
 
 	
-	if ( verbosity >= 0 ) { // standard UI
+	if ( verbosity >= 0 && !module_mode && num_threads <= 1 ) { // standard UI
 		if ( verbosity > 1 )
 			fprintf( msgout,  "\n----------------------------------------" );
 		
 		// display success/failure message
 		switch ( verbosity ) {
-			case 0:			
-				if ( errorlevel < err_tol ) {
-					if ( action == A_COMPRESS ) fprintf( msgout,  "%.2f%%", cr );
-					else fprintf( msgout, "DONE" );
+			case 0:
+				{
+					const char* _sl = strrchr( filelist[ file_no ], '/' );
+					#if defined(_WIN32) || defined(WIN32)
+					const char* _bs = strrchr( filelist[ file_no ], '\\' );
+					if ( _bs && ( !_sl || _bs > _sl ) ) _sl = _bs;
+					#endif
+					const char* _fn = _sl ? _sl + 1 : filelist[ file_no ];
+					if ( errorlevel < err_tol ) {
+						if ( action == A_COMPRESS && filetype == F_MP3 ) {
+							long long orig_kb = ( mp3filesize + 512 ) / 1024;
+							long long comp_kb = ( pmpfilesize + 512 ) / 1024;
+							double time_s = ( total >= 0 ) ? total / 1000.0 : 0.0;
+							#if defined(_WIN32) || defined(WIN32)
+							fprintf( msgout, "\r  +  %-46.46s %6lld KB -> %6lld KB  %5.1f%%  %5.2fs\n",
+								_fn, orig_kb, comp_kb, cr, time_s );
+							#else
+							fprintf( msgout, "\r  %s\xe2\x9c\x93%s  %-46.46s %6lld KB \xe2\x86\x92 %6lld KB  %5.1f%%  %5.2fs\n",
+								COL_BGREEN, COL_RESET, _fn, orig_kb, comp_kb, cr, time_s );
+							#endif
+						} else if ( action != A_LIST && action != A_STATS ) {
+							#if defined(_WIN32) || defined(WIN32)
+							fprintf( msgout, "\r  +  %-46.46s DONE\n", _fn );
+							#else
+							fprintf( msgout, "\r  %s\xe2\x9c\x93%s  %-46.46s DONE\n", COL_BGREEN, COL_RESET, _fn );
+							#endif
+						}
+					} else {
+						#if defined(_WIN32) || defined(WIN32)
+						fprintf( msgout, "\r  x  %-46.46s ERROR\n", _fn );
+						#else
+						fprintf( msgout, "\r  %s\xe2\x9c\x97%s  %-46.46s %sERROR%s\n",
+							COL_BRED, COL_RESET, _fn, COL_BRED, COL_RESET );
+						#endif
+					}
 				}
-				else fprintf( msgout,  "ERROR" );
-				if ( errorlevel > 0 ) fprintf( msgout,  "\n" );
 				break;
 			
 			case 1:
-				fprintf( msgout, "%s\n",  ( errorlevel < err_tol ) ? "DONE" : "ERROR" );
+				if ( errorlevel < err_tol ) fprintf( msgout, "%sDONE%s\n",  COL_BGREEN, COL_RESET );
+				else                        fprintf( msgout, "%sERROR%s\n", COL_BRED,   COL_RESET );
 				break;
-			
+
 			case 2:
-				if ( errorlevel < err_tol ) fprintf( msgout,  "\n-> %s OK\n", actionmsg );
-				else  fprintf( msgout,  "\n-> %s ERROR\n", actionmsg );
+				if ( errorlevel < err_tol ) fprintf( msgout,  "\n-> %s %sOK%s\n",    actionmsg, COL_BGREEN, COL_RESET );
+				else                        fprintf( msgout,  "\n-> %s %sERROR%s\n", actionmsg, COL_BRED,   COL_RESET );
 				break;
 		}
 		
@@ -1145,7 +1303,7 @@ INTERN void process_ui( void )
 		if ( ( verbosity > 1 ) && ( action == A_COMPRESS ) )
 			fprintf( msgout,  "\n" );
 	}
-	else { // progress bar UI
+	else if ( verbosity < 0 && num_threads <= 1 ) { // progress bar UI (single-thread)
 		// if this is the last file, update progress bar one last time
 		if ( file_no + 1 == file_cnt ) {
 			// update progress message
@@ -1264,8 +1422,8 @@ INTERN void show_help( void )
 	fprintf( msgout, " a         compress only: process MP3 files, skip PMP\n" );
 	fprintf( msgout, " x         decompress only: process PMP files, skip MP3\n" );
 	fprintf( msgout, " mix       mixed mode: auto-detect (warns if both directions used)\n" );
-	fprintf( msgout, " list      list PMP file info without decompressing (Phase 3 — not yet implemented)\n" );
-	fprintf( msgout, " stats     show MP3 file info (size, layer, channels) without compressing (Phase 3)\n" );
+	fprintf( msgout, " list      list PMP file info without decompressing\n" );
+	fprintf( msgout, " stats     show MP3 file info (size, layer, channels) without compressing\n" );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Switches:\n" );
 	fprintf( msgout, "\n" );
@@ -1275,6 +1433,7 @@ INTERN void show_help( void )
 	fprintf( msgout, " [-np]    no pause after processing files\n" );
 	fprintf( msgout, " [--no-color] disable ANSI color output (also respected via NO_COLOR env var)\n" );
 	fprintf( msgout, " [-o]     overwrite existing files\n" );
+	fprintf( msgout, " [-th<N>] use N threads for batch processing (0=auto; forces verify)\n" );
 	fprintf( msgout, " [-r]     recurse into subdirectories\n" );
 	fprintf( msgout, " [-fs]    preserve source folder structure under -od (use with -r)\n" );
 	fprintf( msgout, " [-dry]   dry run: simulate without writing output files\n" );
@@ -1324,6 +1483,19 @@ INTERN void process_file( void )
 				#endif
 				break;
 				
+			#if !defined(BUILD_LIB)
+			case A_STATS:
+				execute( read_mp3 );
+				execute( analyze_frames );
+				execute( stats_mp3 );
+				break;
+
+			case A_LIST:
+				snprintf( errormessage, MSG_SIZE, "list is only supported for PMP files" );
+				errorlevel = 2;
+				break;
+			#endif
+
 			#if !defined(BUILD_LIB) && defined(DEV_BUILD)
 			case A_DUMP_SEPERATE:
 				execute( read_mp3 );
@@ -1396,7 +1568,18 @@ INTERN void process_file( void )
 				}
 				#endif
 				break;
-				
+
+			#if !defined(BUILD_LIB)
+			case A_LIST:
+				execute( list_pmp );
+				break;
+
+			case A_STATS:
+				snprintf( errormessage, MSG_SIZE, "stats is only supported for MP3 files" );
+				errorlevel = 2;
+				break;
+			#endif
+
 			#if !defined(BUILD_LIB) && defined(DEV_BUILD)
 			case A_DUMP_SEPERATE:
 				execute( uncompress_pmp );
@@ -1469,11 +1652,11 @@ INTERN void execute( bool (*function)() )
 		bool success;
 		int total;
 		
-		// write statusmessage
-		if ( verbosity == 2 ) {
+		// write statusmessage (suppressed in -th batch mode to avoid interleaving)
+		if ( verbosity == 2 && num_threads <= 1 ) {
 			fprintf( msgout,  "\n%s ", get_status( function ) );
 			for ( int i = strlen( get_status( function ) ); i <= 30; i++ )
-				fprintf( msgout,  " " );			
+				fprintf( msgout,  " " );
 		}
 		
 		// set starttime
@@ -1489,11 +1672,11 @@ INTERN void execute( bool (*function)() )
 		// write time or failure notice
 		if ( success ) {
 			total = (int) ( (double) (( end - begin ) * 1000) / CLOCKS_PER_SEC );
-			if ( verbosity == 2 ) fprintf( msgout,  "%6ims", ( total >= 0 ) ? total : -1 );
+			if ( verbosity == 2 && num_threads <= 1 ) fprintf( msgout,  "%6ims", ( total >= 0 ) ? total : -1 );
 		}
 		else {
 			errorfunction = function;
-			if ( verbosity == 2 ) fprintf( msgout,  "%8s", "ERROR" );
+			if ( verbosity == 2 && num_threads <= 1 ) fprintf( msgout,  "%8s", "ERROR" );
 		}
 		#else
 		// call function
@@ -1553,8 +1736,11 @@ INTERN bool check_file( void )
 	if ( ( fileid[0] == pmp_magic[0] ) && ( fileid[1] == pmp_magic[1] ) ) {
 		// PMP marker -> file is PMP
 		filetype = F_PMP;
-		// skip silently if -c flag (compress only)
-		if ( compress_only ) return false;
+		// skip silently if compress-only: reset to F_UNK so process_file()
+		// does nothing (was a NULL-str_out crash when it tried to decode).
+		if ( compress_only ) { filetype = F_UNK; return false; }
+		// v1.2 'list' reads the header from the input stream only — no output
+		if ( action == A_LIST ) return true;
 		// create filenames
 		if ( !pipe_on ) {
 			pmpfilename = (char*) calloc( strlen( filename ) + 1, sizeof( char ) );
@@ -1567,8 +1753,9 @@ INTERN bool check_file( void )
 			mp3filename = create_filename( "STDOUT", NULL );
 			pmpfilename = create_filename( "STDIN", NULL );
 		}
-		// open output stream, check for errors
-		str_out = new iostream( (void*) mp3filename, ( !pipe_on ) ? 0 : 2, 0, 1 );
+		// open output stream, check for errors. -dry writes to memory (discarded).
+		str_out = dry_run ? new iostream( NULL, 1, 0, 1 )
+			: new iostream( (void*) mp3filename, ( !pipe_on ) ? 0 : 2, 0, 1 );
 		if ( str_out->chkerr() ) {
 			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, mp3filename );
 			errorlevel = 2;
@@ -1578,8 +1765,11 @@ INTERN bool check_file( void )
 	else {
 		// for all other cases we assume that file might be MPEG X LAYER Y
 		filetype = F_MP3;
-		// skip silently if -x flag (decompress only)
-		if ( decompress_only ) return false;
+		// skip silently if decompress-only: reset to F_UNK so process_file()
+		// does nothing (was a NULL-str_out crash when it tried to compress).
+		if ( decompress_only ) { filetype = F_UNK; return false; }
+		// v1.2 'stats' reads the MP3 only — no output file
+		if ( action == A_STATS ) return true;
 		// create filenames
 		if ( !pipe_on ) {
 			mp3filename = (char*) calloc( strlen( filename ) + 1, sizeof( char ) );
@@ -1592,8 +1782,9 @@ INTERN bool check_file( void )
 			mp3filename = create_filename( "STDIN", NULL );
 			pmpfilename = create_filename( "STDOUT", NULL );
 		}
-		// open output stream, check for errors
-		str_out = new iostream( (void*) pmpfilename, ( !pipe_on ) ? 0 : 2, 0, 1 );
+		// open output stream, check for errors. -dry writes to memory (discarded).
+		str_out = dry_run ? new iostream( NULL, 1, 0, 1 )
+			: new iostream( (void*) pmpfilename, ( !pipe_on ) ? 0 : 2, 0, 1 );
 		if ( str_out->chkerr() ) {
 			snprintf( errormessage, MSG_SIZE, FWR_ERRMSG, pmpfilename );
 			errorlevel = 2;
@@ -1952,7 +2143,7 @@ INTERN bool read_mp3( void )
 	data_after_size = mp3filesize - main_data_end;
 	data_before_size = main_data_begin;
 #if !defined(BUILD_LIB)
-	// v2.0 -d (disc_meta): drop any leading/trailing non-frame bytes
+	// v1.2 -d (disc_meta): drop any leading/trailing non-frame bytes
 	// (typically ID3v2 / ID3v1 / garbage). Roundtrip becomes irreversible
 	// — user opted in via the flag.
 	if ( disc_meta ) {
@@ -2307,7 +2498,7 @@ INTERN bool uncompress_pmp( void )
 	
 	// version number
 	str_in->read( &hcode, 1, 1 );
-	// v2.0: accept v1.1 (byte 0x0B) and v2.0 (byte 0x14) archives.
+	// v1.2: accept v1.1 (byte 0x0B) and v1.2 (byte 0x0C) archives.
 	// Format payload after the version byte is unchanged across the bump.
 	if ( hcode != appversion && hcode < appversion_legacy_min ) {
 		snprintf( errormessage, MSG_SIZE, "incompatible file, use %s v%i.%i",
@@ -2711,8 +2902,10 @@ INTERN inline mp3Frame* mp3_build_frame( void )
 	----------------------------------------------- */
 INTERN inline bool mp3_append_frame( mp3Frame* frame )
 {
-	static granuleInfo* lastgranule[2] = { NULL, NULL };
-	static int n = 0;
+	// thread_local: -th processes independent files concurrently and each needs
+	// its own frame-chain build state (reset when this thread's lastframe==NULL).
+	static thread_local granuleInfo* lastgranule[2] = { NULL, NULL };
+	static thread_local int n = 0;
 	int ch;
 	
 	
@@ -2907,7 +3100,7 @@ INTERN inline bool mp3_unmute_frame( mp3Frame* frame )
 	----------------------------------------------- */
 INTERN inline unsigned char* mp3_build_fixed( mp3Frame* frame )
 {
-	static unsigned char* fixed = ( unsigned char* ) calloc( 64, 1 );
+	static thread_local unsigned char* fixed = ( unsigned char* ) calloc( 64, 1 );
 	unsigned char* tmp_ptr;
 	
 	granuleInfo* granule;
@@ -3172,8 +3365,8 @@ INTERN inline unsigned short mp3_calc_layer3_crc( unsigned char* header, unsigne
 #if !defined(BUILD_LIB) && defined(DEV_BUILD)
 INTERN inline granuleData*** mp3_decode_frame( huffman_reader* dec, mp3Frame* frame )
 {
-	// storage
-	static granuleData*** frame_data = NULL;
+	// storage (thread_local: each -th worker decodes a different frame)
+	static thread_local granuleData*** frame_data = NULL;
 	granuleInfo* granule;
 	signed short* coefs;
 	unsigned char* scfs;
@@ -4729,7 +4922,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	// -> encode using main size prediction as context
 	
 	// context / storage
-	static unsigned char* pad_and_aux= ( unsigned char* ) calloc( 2048, 1 ); // !!! (length)
+	static thread_local unsigned char* pad_and_aux= ( unsigned char* ) calloc( 2048, 1 ); // !!! (length)
 	mp3Frame* frame;
 	granuleInfo* granule;
 	unsigned char* scf_c[2];
@@ -5381,7 +5574,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 INTERN inline bool pmp_decode_main_data( aricoder* dec )
 {
 	// context / storage
-	static unsigned char* pad_and_aux= ( unsigned char* ) calloc( 2048, 1 );
+	static thread_local unsigned char* pad_and_aux= ( unsigned char* ) calloc( 2048, 1 );
 	mp3Frame* frame;
 	granuleInfo* granule;
 	unsigned char* scf_c[2];
@@ -6163,15 +6356,15 @@ INTERN inline bool pmp_build_context( void )
 	----------------------------------------------- */
 INTERN inline unsigned char* pmp_predict_lame_anc( int nbits, unsigned char* ref )
 {
-	static unsigned char* pred = (unsigned char*) calloc( 2048, sizeof( char ) );
-	static unsigned char* lame_str = (unsigned char*) calloc( 4 + 16, sizeof( char ) ); // !!!
+	static thread_local unsigned char* pred = (unsigned char*) calloc( 2048, sizeof( char ) );
+	static thread_local unsigned char* lame_str = (unsigned char*) calloc( 4 + 16, sizeof( char ) ); // !!!
 	const unsigned char b01 = 0x55;
 	const unsigned char b10 = 0xAA;
 	const unsigned char b00 = 0x00;
 	const unsigned char b11 = 0xFF;
-	static int lame_str_len = 4;
-	static int lame_bit = 0;
-	static bool alt_pred = 0;
+	static thread_local int lame_str_len = 4;
+	static thread_local int lame_bit = 0;
+	static thread_local bool alt_pred = 0;
 	int offset;
 	int nbytes;
 	int i;
@@ -6273,12 +6466,86 @@ INTERN inline void progress_bar( int current, int last )
 #endif
 
 /* -----------------------------------------------
+	v1.2 'list' / 'stats' subcommand helpers
+	----------------------------------------------- */
+#if !defined(BUILD_LIB)
+INTERN std::string pmp_human_size( long long bytes )
+{
+	char buf[ 32 ];
+	if ( bytes >= 1024 * 1024 )
+		snprintf( buf, sizeof(buf), "%.2f MB", bytes / (1024.0*1024.0) );
+	else if ( bytes >= 1024 )
+		snprintf( buf, sizeof(buf), "%.1f KB", bytes / 1024.0 );
+	else
+		snprintf( buf, sizeof(buf), "%lld B", bytes );
+	return buf;
+}
+
+INTERN const char* pmp_channel_label( void )
+{
+	switch ( i_channels ) {
+		case MP3_STEREO:		return "stereo";
+		case MP3_JOINT_STEREO:	return "joint stereo";
+		case MP3_DUAL_CHANNEL:	return "dual channel";
+		case MP3_MONO:			return "mono";
+		default:				return "unknown";
+	}
+}
+
+// 'list': show PMP archive info without decompressing the audio.
+// Only the header + per-frame side info is read (pmp_read_header), never the
+// arithmetic-coded main data, so this is cheap.
+INTERN bool list_pmp( void )
+{
+	long long sz = (long long) str_in->getsize();
+	unsigned char b = 0;
+	str_in->rewind();
+	str_in->read( &b, 1, 1 );	// magic byte 0
+	str_in->read( &b, 1, 1 );	// magic byte 1
+	str_in->read( &b, 1, 1 );	// version byte
+	int vmaj = b / 10, vmin = b % 10;
+
+	if ( !pmp_read_header( str_in ) ) return false;
+
+	fprintf( msgout, "  version  : v%i.%i\n", vmaj, vmin );
+	fprintf( msgout, "  packed   : %s\n", pmp_human_size( sz ).c_str() );
+	fprintf( msgout, "  format   : MPEG-1 Layer III\n" );
+	fprintf( msgout, "  frames   : %i\n", g_nframes );
+	fprintf( msgout, "  channels : %i (%s)\n", g_nchannels, pmp_channel_label() );
+	fprintf( msgout, "  rate     : %i Hz\n", g_samplerate );
+	if ( g_bitrate > 0 ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", g_bitrate );
+	else                 fprintf( msgout, "  bitrate  : VBR / not global\n" );
+
+	pmpfilesize = (int) sz;
+	mp3filesize = 0;
+	return true;
+}
+
+// 'stats': show MP3 info. Runs after read_mp3 + analyze_frames have populated
+// the i_*/g_* globals, so it only prints.
+INTERN bool stats_mp3( void )
+{
+	fprintf( msgout, "  size     : %s\n", pmp_human_size( (long long) mp3filesize ).c_str() );
+	fprintf( msgout, "  format   : MPEG-1 Layer III\n" );
+	fprintf( msgout, "  frames   : %i\n", g_nframes );
+	fprintf( msgout, "  channels : %i (%s)\n", g_nchannels, pmp_channel_label() );
+	fprintf( msgout, "  rate     : %i Hz\n", g_samplerate );
+	if ( g_bitrate > 0 ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", g_bitrate );
+	else                 fprintf( msgout, "  bitrate  : VBR / not global\n" );
+
+	pmpfilesize = 0;
+	return true;
+}
+#endif
+
+
+/* -----------------------------------------------
 	creates filename, callocs memory for it
 	----------------------------------------------- */
 #if !defined(BUILD_LIB)
 INTERN inline char* create_filename( const char* base, const char* extension )
 {
-	// v2.0: when outdir is set, drop base's directory prefix and place
+	// v1.2: when outdir is set, drop base's directory prefix and place
 	// the file under outdir. -fs: when -r expanded a dir AND outdir is
 	// set, mirror the path's relative subdir from src_root under outdir
 	// (caesium-clt -RS semantics).
@@ -6322,9 +6589,13 @@ INTERN inline char* create_filename( const char* base, const char* extension )
 		if ( !fs_subdir.empty() ) {
 			strcat( filename, fs_subdir.c_str() );
 			strcat( filename, "/" );
+		}
+		// ensure the output directory exists (-od on its own, and -od + -fs).
+		// filename currently holds the directory path (ends with '/').
+		// -dry never writes, so don't create directories either.
+		if ( !dry_run ) {
 			std::error_code ec;
-			std::filesystem::create_directories(
-				std::filesystem::path( filename ), ec );
+			std::filesystem::create_directories( std::filesystem::path( filename ), ec );
 		}
 		strcat( filename, basename_only );
 	} else {
@@ -6342,20 +6613,27 @@ INTERN inline char* create_filename( const char* base, const char* extension )
 #if !defined(BUILD_LIB)
 INTERN inline char* unique_filename( const char* base, const char* extension )
 {
-	int len = strlen( base ) + ( ( extension == NULL ) ? 0 : strlen( extension ) + 1 ) + 2;	
-	char* filename = (char*) calloc( len, sizeof( char ) );	
-	
+	// v1.2: build the base candidate via create_filename so -od (output dir)
+	// and -fs (folder structure) are honoured in non-overwrite mode too.
+	// Previously this strcpy'd base directly and silently ignored -od.
+	char* filename = create_filename( base, extension );
+	if ( filename == NULL ) return NULL;
+
+	// guarantee +2 bytes of headroom for the first add_underscore
+	int len = (int) strlen( filename ) + 2;
+	char* tmp = (char*) realloc( filename, len );
+	if ( tmp == NULL ) { free( filename ); return NULL; }
+	filename = tmp;
+
 	// create a unique filename using underscores
-	strcpy( filename, base );
-	set_extension( filename, extension );
 	while ( file_exists( filename ) ) {
 		len += 1;
-		char* tmp = (char*) realloc( filename, len );
+		tmp = (char*) realloc( filename, len );
 		if ( tmp == NULL ) { free( filename ); return NULL; }
 		filename = tmp;
 		add_underscore( filename );
 	}
-	
+
 	return filename;
 }
 #endif
@@ -7009,7 +7287,7 @@ INTERN bool visualize_headers( void )
 {
 	static const int img_width = 1280; // must be divisible by 2
 	static const bool inc_all = false;
-	static unsigned char* line = (unsigned char*) calloc ( img_width, sizeof( char ) );
+	static thread_local unsigned char* line = (unsigned char*) calloc ( img_width, sizeof( char ) );
 	mp3Frame* frame;
 	mp3Frame* frame0 = firstframe;
 	mp3Frame* frame1 = firstframe;

@@ -22,9 +22,9 @@ Changing version in source
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 Edit these constants in packmp3.cpp:
 
-  INTERN const unsigned char appversion = 11; // main version (11 = v1.1)
+  INTERN const unsigned char appversion = 12; // main version (12 = v1.2)
   INTERN const char*  subversion   = "";       // sub version string
 
 The displayed version is: v{appversion/10}.{appversion%10}{subversion}
-  appversion=11, subversion=""  -> "v1.1"
+  appversion=12, subversion=""  -> "v1.2"
   appversion=10, subversion="g" -> "v1.0g"

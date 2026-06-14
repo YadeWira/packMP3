@@ -26,6 +26,12 @@
 *.exe
 *.out
 *.app
+# built CLI binary (named like the project, so ignore by path)
+/source/packMP3
+/bin/
 
 # Folders to ignore
 /zzz_backup/
+
+# AI/VM connection guides (contain credentials) — never commit
+CONEXION-IA*.md

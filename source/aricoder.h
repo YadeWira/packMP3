@@ -207,10 +207,10 @@ static inline void shift_model( model_b* model, int ctx1, int ctx2, int ctx3 )
 	----------------------------------------------- */
 static inline void encode_ari( aricoder* encoder, model_s* model, int c )
 {
-	static symbol s;
-	static int esc;
-	
-	do {		
+	symbol s;		// plain locals: scratch, fully overwritten each call.
+	int esc;		// (were 'static' — a data race under -th multithreading)
+
+	do {
 		esc = model->convert_int_to_symbol( c, &s );
 		encoder->encode( &s );
 	} while ( esc );
@@ -222,10 +222,10 @@ static inline void encode_ari( aricoder* encoder, model_s* model, int c )
 	----------------------------------------------- */	
 static inline int decode_ari( aricoder* decoder, model_s* model )
 {
-	static symbol s;
-	static unsigned int count;
-	static int c;
-	
+	symbol s;
+	unsigned int count;
+	int c;
+
 	do{
 		model->get_symbol_scale( &s );
 		count = decoder->decode_count( &s );
@@ -242,8 +242,8 @@ static inline int decode_ari( aricoder* decoder, model_s* model )
 	----------------------------------------------- */	
 static inline void encode_ari( aricoder* encoder, model_b* model, int c )
 {
-	static symbol s;
-	
+	symbol s;
+
 	model->convert_int_to_symbol( c, &s );
 	encoder->encode( &s );
 	model->update_model( c );
@@ -254,10 +254,10 @@ static inline void encode_ari( aricoder* encoder, model_b* model, int c )
 	----------------------------------------------- */	
 static inline int decode_ari( aricoder* decoder, model_b* model )
 {
-	static symbol s;
-	static unsigned int count;
-	static int c;
-	
+	symbol s;
+	unsigned int count;
+	int c;
+
 	model->get_symbol_scale( &s );
 	count = decoder->decode_count( &s );
 	c = model->convert_symbol_to_int( count, &s );

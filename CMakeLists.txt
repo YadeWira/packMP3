@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(packMP3 VERSION 1.1.0 LANGUAGES CXX)
+project(packMP3 VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,11 +35,16 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     list(APPEND PACKMP3_COMPILE_OPTIONS -fsched-spec-load)
 endif()
 
+# ---- Threads (for -th batch multithreading) ----
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 # ---- CLI Executable ----
 add_executable(packMP3 ${PACKMP3_SOURCES})
 target_include_directories(packMP3 PRIVATE source)
 target_compile_definitions(packMP3 PRIVATE UNIX)
 target_compile_options(packMP3 PRIVATE ${PACKMP3_COMPILE_OPTIONS})
+target_link_libraries(packMP3 PRIVATE Threads::Threads)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(packMP3 PRIVATE DEV_BUILD)

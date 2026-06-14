@@ -23,8 +23,8 @@ WIN64       = x86_64-w64-mingw32-g++
 WIN32       = i686-w64-mingw32-g++
 WINDRES64   = x86_64-w64-mingw32-windres
 WINDRES32   = i686-w64-mingw32-windres
-CROSS_FLAGS = -I. -std=c++17 -O3 -Wall -funroll-loops -ffast-math -fomit-frame-pointer
-CROSS_LD    = -static -static-libgcc -static-libstdc++
+CROSS_FLAGS = -I. -std=c++17 -O3 -Wall -funroll-loops -ffast-math -fomit-frame-pointer -pthread
+CROSS_LD    = -static -static-libgcc -static-libstdc++ -pthread
 
 # ---- Platform detection ----
 ifeq ($(OS),Windows_NT)
@@ -32,7 +32,8 @@ ifeq ($(OS),Windows_NT)
   RES       = icons.res
   UPX      := upx --best --lzma $(TARGET).exe 2>/dev/null || true
 else
-  CXXFLAGS += -DUNIX
+  CXXFLAGS += -DUNIX -pthread
+  LDFLAGS  += -pthread
   # -static is opt-in on Linux (pass STATIC=1)
   ifeq ($(STATIC),1)
     LDFLAGS += -static -static-libgcc -static-libstdc++

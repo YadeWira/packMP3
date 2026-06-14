@@ -97,10 +97,31 @@ Usage examples:
  "packMP3 -p *.mp3"
 
 
-Known Limitations 
-~~~~~~~~~~~~~~~~~ 
+System requirements / Compatibility
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-packMP3 is a compression program specially for MP3 files, so it doesn't 
+packMP3 v1.2 runs on:
+
+ - Windows 7 SP1 and later, both x64 and x86 (32-bit)
+ - Linux x64
+
+The Windows builds are statically linked (no MSVC redistributable, no
+pthread DLL, no UCRT requirement) so they run on a clean Windows 7 with
+no extra installs. Compressed/decompressed output is bit-for-bit identical
+across all platforms and is independent of the thread count (-th), so a
+PMP made on Linux decompresses to the exact same MP3 on Windows and vice
+versa. ANSI colour output is used on Windows 10+/modern terminals and is
+disabled automatically on older consoles (Windows 7) and when output is
+redirected.
+
+Verified on Windows 7 SP1 x64/x86, Windows 10 x64 and Linux x64:
+compression, decompression, bit-exact round-trip, and -th multithreading.
+
+
+Known Limitations
+~~~~~~~~~~~~~~~~~
+
+packMP3 is a compression program specially for MP3 files, so it doesn't
 compress other file types.
 
 Please note that MP3 may stand for three different audio file types: 
