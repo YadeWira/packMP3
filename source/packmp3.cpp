@@ -108,6 +108,9 @@ INTERN bool uncompress_pmp( void );
 	function declarations: MP3-specific
 	----------------------------------------------- */
 
+INTERN inline int mp3_ngr( int mpeg );
+INTERN inline int mp3_frame_bytes( int mpeg, int samples, int bits, int padding );
+INTERN inline int mp3_lsf_scf_params( const mp3Frame* frame, const granuleInfo* granule, int ch, int scfsz[4], int scfcnt[4] );
 INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size );
 INTERN inline mp3Frame* mp3_build_frame( void );
 INTERN inline bool mp3_append_frame( mp3Frame* frame );
@@ -260,6 +263,7 @@ THREAD_LOCAL int  g_bitrate     =   0;  // bit rate - global or zero for vbr
 
 THREAD_LOCAL char i_mpeg			= -1; // mpeg - non changing
 THREAD_LOCAL char i_layer			= -1; // layer - non changing
+THREAD_LOCAL int  pmp_archive_version = 0; // version byte of the PMP being decoded (for format-evolution gating)
 THREAD_LOCAL char i_samplerate	= -1; // sample rate - non changing
 THREAD_LOCAL char i_bitrate		= -1; // bit rate - value or -1 (variable)
 THREAD_LOCAL char i_protection	= -1; // checksum - for all (1), none (0) or some (-1) frames
@@ -361,8 +365,8 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 	global variables: info about program
 	----------------------------------------------- */
 
-INTERN const unsigned char appversion = 12;
-INTERN const unsigned char appversion_legacy_min = 11; // v1.2 decodes back to v1.1 archives
+INTERN const unsigned char appversion = 13;
+INTERN const unsigned char appversion_legacy_min = 11; // v1.3 decodes v1.1/v1.2 archives too
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
@@ -2024,10 +2028,11 @@ INTERN bool read_mp3( void )
 	}
 	main_data_begin = pos;
 	
-	// check first frame header for MPEG and LAYER version
+	// check first frame header for MPEG and LAYER version.
+	// v1.3: accept Layer III for MPEG-1, MPEG-2 and MPEG-2.5; reject Layers I/II.
 	if ( mp3filesize - pos >= 2 ) {
 		type = MBITS( mp3data[pos+1], 5, 1 );
-		if ( type != MPEG1_LAYER_III ) {
+		if ( ( type != MPEG1_LAYER_III ) && ( type != MPEG2_LAYER_III ) && ( type != MPEG2_5_LAYER_III ) ) {
 			snprintf( errormessage, MSG_SIZE, "file is %s, not supported", filetype_description[type] );
 			errorlevel = 2;
 			free( mp3data );
@@ -2105,7 +2110,7 @@ INTERN bool read_mp3( void )
 		// check for pointing to empty space
 		if ( frame->main_index < 0 ) n_bad_first = frame->n + 1;
 		// advance to next physical frame
-		pos += frame->frame_size;		
+		pos += frame->frame_size;
 	}
 	
 	// store main data
@@ -2301,7 +2306,7 @@ INTERN bool analyze_frames( void )
 		}
 		nch = frame->nchannels;
 		for ( ch = 0; ch < nch; ch++ ) {
-			for ( gr = 0; gr < 2; gr++ ) {
+			for ( gr = 0; gr < mp3_ngr( frame->mpeg ); gr++ ) {
 				granule = frame->granules[ch][gr];
 				sbx_gain =
 					( granule->sb_gain[0] != 0 ) ||
@@ -2325,8 +2330,8 @@ INTERN bool analyze_frames( void )
 	// fill in some global info
 	g_nframes = lastframe->n + 1;
 	g_nchannels = ( i_channels == MP3_MONO ) ? 1 : 2;  // number of channels
-	g_samplerate = mp3_samplerate_table[(int)i_samplerate];  // sample rate
-	g_bitrate = ( i_bitrate == -1 ) ? 0 : mp3_bitrate_table[(int)i_bitrate]; // bit rate
+	g_samplerate = samplerate_table[(int)i_mpeg][(int)i_samplerate];  // sample rate (per MPEG version)
+	g_bitrate = ( i_bitrate == -1 ) ? 0 : bitrate_table[(int)i_mpeg][LAYER_III][(int)i_bitrate]; // bit rate
 	
 	
 	return true;
@@ -2512,7 +2517,10 @@ INTERN bool uncompress_pmp( void )
 		errorlevel = 2;
 		return false;
 	}
-	
+	// remember the archive's version so pmp_read_header knows which format
+	// fields are present (e.g. MPEG-version bits exist only from v1.3 on).
+	pmp_archive_version = hcode;
+
 	// read and analyse header
 	if ( !pmp_read_header( str_in ) ) return false;
 	
@@ -2608,6 +2616,60 @@ INTERN bool uncompress_pmp( void )
 
 
 /* -----------------------------------------------
+	granules per frame: MPEG-1 has 2, MPEG-2/2.5 (LSF) have 1
+	----------------------------------------------- */
+INTERN inline int mp3_ngr( int mpeg )
+{
+	return ( mpeg == MP3_V1_0 ) ? 2 : 1;
+}
+
+
+/* -----------------------------------------------
+	Layer III frame size in bytes. MPEG-1 = 1152 samples/frame (factor 144),
+	MPEG-2/2.5 LSF = 576 samples/frame (factor 72). The static frame_size_table
+	is only valid for MPEG-1, so compute LSF sizes from the bitrate/samplerate.
+	----------------------------------------------- */
+INTERN inline int mp3_frame_bytes( int mpeg, int samples, int bits, int padding )
+{
+	if ( mpeg == MP3_V1_0 )
+		return frame_size_table[ MP3_V1_0 ][ LAYER_III ][ samples ][ bits ] + ( padding ? 1 : 0 );
+	int br = bitrate_table[ mpeg ][ LAYER_III ][ bits ];   // kbps
+	int sr = samplerate_table[ mpeg ][ samples ];          // Hz
+	if ( br <= 0 || sr <= 0 ) return 0;
+	return ( 72 * br * 1000 ) / sr + ( padding ? 1 : 0 );
+}
+
+
+/* -----------------------------------------------
+	MPEG-2/2.5 (LSF) scalefactor layout (ISO/IEC 13818-3).
+	scalefac_compress (9 bits) -> partition bit-widths scfsz[4] and band
+	counts scfcnt[4]; returns total band count. Algorithm verified vs minimp3.
+	The right channel under intensity stereo uses a shifted table.
+	----------------------------------------------- */
+INTERN inline int mp3_lsf_scf_params( const mp3Frame* frame, const granuleInfo* granule,
+                                      int ch, int scfsz[4], int scfcnt[4] )
+{
+	static const unsigned char g_mod[ 6*4 ] =
+		{ 5,5,4,4, 5,5,4,1, 4,3,1,1, 5,6,6,1, 4,4,4,1, 4,3,1,1 };
+	static const unsigned char g_scf_part[ 3 ][ 28 ] = {
+		{ 6,5,5,5,6,5,5,5,6,5,7,3,11,10,0,0,7,7,7,0,6,6,6,3,8,8,5,0 },
+		{ 8,9,6,12,6,9,9,9,6,9,12,6,15,18,0,0,6,15,12,0,6,12,9,6,6,18,9,0 },
+		{ 9,9,6,12,9,9,9,9,9,9,12,6,18,18,0,0,12,12,12,0,12,9,9,6,15,12,9,0 }
+	};
+	int ist = ( ( frame->channels == MP3_JOINT_STEREO ) && frame->stereo_int && ( ch == 1 ) ) ? 1 : 0;
+	int sfc = ( (int) granule->scalefac_compress ) >> ist;
+	int kk = ist * 12, modprod, i, tot = 0;
+	for ( ; sfc >= 0; sfc -= modprod, kk += 4 ) {
+		modprod = 1;
+		for ( i = 3; i >= 0; i-- ) { scfsz[ i ] = ( sfc / modprod ) % g_mod[ kk + i ]; modprod *= g_mod[ kk + i ]; }
+	}
+	int prow = ( granule->block_type == SHORT_BLOCK ) ? ( granule->mixed_flag ? 1 : 2 ) : 0;
+	for ( i = 0; i < 4; i++ ) { scfcnt[ i ] = g_scf_part[ prow ][ kk + i ]; tot += scfcnt[ i ]; }
+	return tot;
+}
+
+
+/* -----------------------------------------------
 	read one physical frame
 	----------------------------------------------- */
 INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
@@ -2620,19 +2682,23 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 	unsigned short crc;
 	int nsb = 0;
 	int nch = 0;
+	int ngr = 2;
 	int ch, gr;
 
-	
+
 	// immediately return if not enough data (min size for header and side info = 21)
 	if ( max_size < 21 ) return NULL;
 
 	// --- frame header ---
 	header = data + 0;
 	
-	// check syncword
-	if ( ( header[0] != 0xFF ) || ( (header[1]&0xFA) != 0xFA ) ) {
-		// no syncword or not MPEG-1 LAYER III
-		// might be end of audio data -> process in other function
+	// check syncword + Layer III (any MPEG version: 1, 2 or 2.5).
+	// Reject: missing 11-bit sync, reserved MPEG version (0b01), or non-Layer-III.
+	// (might be end of audio data -> handled by the caller)
+	if ( ( header[0] != 0xFF ) ||
+	     ( ( header[1] & 0xE0 ) != 0xE0 ) ||
+	     ( ( (header[1]>>3) & 0x3 ) == 0x1 ) ||
+	     ( ( (header[1]>>1) & 0x3 ) != LAYER_III ) ) {
 		return NULL;
 	}
 	
@@ -2675,18 +2741,18 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 	// number of channels
 	frame->nchannels = ( frame->channels == MP3_MONO ) ? 1 : 2;
 	nch = frame->nchannels;
-	
-	// alloc memory for granules
+
+	// alloc memory for granules (MPEG-1: 2 per frame, MPEG-2/2.5 LSF: 1)
+	ngr = mp3_ngr( frame->mpeg );
 	frame->granules = (granuleInfo***) calloc( nch, sizeof( granuleInfo** ) );
 	for ( ch = 0; ch < nch; ch++ ) {
-		frame->granules[ch] = (granuleInfo**) calloc( 2, sizeof( granuleInfo* ) );
-		for ( gr = 0; gr < 2; gr++ )
+		frame->granules[ch] = (granuleInfo**) calloc( ngr, sizeof( granuleInfo* ) );
+		for ( gr = 0; gr < ngr; gr++ )
 			frame->granules[ch][gr] = (granuleInfo*) calloc( 1, sizeof( granuleInfo ) );
 	}
 	
-	// calculate size of frame - use the lookup table
-	frame->frame_size = mp3_frame_size_table[(int)frame->samples][(int)frame->bits];
-	if ( frame->padding ) frame->frame_size++;
+	// calculate size of frame (MPEG-1 via table, MPEG-2/2.5 via formula)
+	frame->frame_size = mp3_frame_bytes( frame->mpeg, frame->samples, frame->bits, frame->padding );
 	
 	// this is the actual calculation routine, which is now no more used 
 	/* if ( frame->layer != LAYER_I ) frame->frame_size = (int) ( frame->padding +
@@ -2697,7 +2763,9 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 			samplerate_table[frame->mpeg][frame->samples] ) );*/	
 
 	// --- side information... ---
-	nsb = ( nch == 1 ) ? 17 : 32;
+	// MPEG-2/2.5 (LSF) side info is half-size: 9/17 bytes vs MPEG-1's 17/32.
+	const bool lsf = ( frame->mpeg != MP3_V1_0 );
+	nsb = lsf ? ( ( nch == 1 ) ? 9 : 17 ) : ( ( nch == 1 ) ? 17 : 32 );
 	frame->fixed_size = 4 + nsb + (frame->protection ? 2 : 0);
 	// check if enough data is available
 	if ( frame->fixed_size > max_size ) {
@@ -2716,21 +2784,28 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 	}
 	else sideinfo = data + 4;
 	side_reader = new abitreader( sideinfo, nsb );
-	// frame global side info
-	frame->bit_reservoir = (short) side_reader->read( 9 );
-	frame->padbits = (char) side_reader->read( (nch==1) ? 5 : 3 );
-	for ( ch = 0; ch < nch; ch++ ) {
-		frame->granules[ch][0]->share = (char) side_reader->read( 4 );
-		frame->granules[ch][1]->share = 0x0;
+	// frame global side info. LSF: main_data_begin is 8 bits (not 9), private
+	// bits are 1/2 (not 5/3), and there is NO scfsi (only 1 granule).
+	frame->bit_reservoir = (short) side_reader->read( lsf ? 8 : 9 );
+	frame->padbits = (char) side_reader->read( lsf ? ( (nch==1) ? 1 : 2 ) : ( (nch==1) ? 5 : 3 ) );
+	if ( !lsf ) {
+		for ( ch = 0; ch < nch; ch++ ) {
+			frame->granules[ch][0]->share = (char) side_reader->read( 4 );
+			if ( ngr > 1 ) frame->granules[ch][1]->share = 0x0;
+		}
+	} else {
+		for ( ch = 0; ch < nch; ch++ ) frame->granules[ch][0]->share = 0x0;
 	}
 	// granule specific side info
-	for ( gr = 0; gr < 2; gr++ ) {
+	for ( gr = 0; gr < ngr; gr++ ) {
 		for ( ch = 0; ch < nch; ch++ ) {
 			granule = frame->granules[ch][gr];
 			granule->main_data_bit = (short) side_reader->read( 12 );
 			granule->big_val_pairs = (short) side_reader->read( 9 );
 			granule->global_gain = (short) side_reader->read( 8 );
-			granule->slength = (char) side_reader->read( 4 );
+			// LSF: scalefac_compress is 9 bits; MPEG-1: slength is 4 bits.
+			if ( lsf ) { granule->scalefac_compress = (short) side_reader->read( 9 ); granule->slength = 0; }
+			else       { granule->slength = (char) side_reader->read( 4 ); granule->scalefac_compress = 0; }
 			granule->window_switching = (char) side_reader->read( 1 );
 			if ( granule->window_switching == 0 ) { // for normal blocks
 				granule->region_table[0] = (char) side_reader->read( 5 );
@@ -2746,9 +2821,9 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 					return NULL;
 				}
 				granule->region_bound[0] =
-					mp3_bandwidth_bounds[(int)frame->samples][(int)granule->region0_size+1];
+					bandwidth_bounds[(int)frame->mpeg][(int)frame->samples][(int)granule->region0_size+1];
 				granule->region_bound[1] =
-					mp3_bandwidth_bounds[(int)frame->samples][(int)granule->region0_size+granule->region1_size+2];
+					bandwidth_bounds[(int)frame->mpeg][(int)frame->samples][(int)granule->region0_size+granule->region1_size+2];
 				granule->region_bound[2] = CLAMPED( 0, 576, granule->big_val_pairs << 1 );
 				if ( granule->region_bound[0] > granule->region_bound[2] ) {
 					granule->region_bound[0] = granule->region_bound[2];
@@ -2773,12 +2848,12 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 					granule->region0_size = 8;
 					granule->region1_size = 0;
 					granule->region_bound[0] =
-						mp3_bandwidth_bounds[(int)frame->samples][8];
+						bandwidth_bounds[(int)frame->mpeg][(int)frame->samples][8];
 				} else { // special treatment for mixed blocks needed (!)
 					granule->region0_size = 9;
 					granule->region1_size = 0;
 					granule->region_bound[0] =
-						mp3_bandwidth_bounds_short[(int)frame->samples][9/3] * 3;
+						bandwidth_bounds_short[(int)frame->mpeg][(int)frame->samples][9/3] * 3;
 				}
 				granule->region_bound[1] = CLAMPED( 0, 576, granule->big_val_pairs << 1 );
 				if ( granule->region_bound[0] > granule->region_bound[1] )
@@ -2786,13 +2861,14 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 				granule->region_bound[2] = granule->region_bound[1];
 				granule->region_table[2] = 0;
 			}
-			granule->preemphasis = (char) side_reader->read( 1 );
+			// LSF has no preflag; MPEG-1 reads a 1-bit preflag here.
+			granule->preemphasis = lsf ? 0 : (char) side_reader->read( 1 );
 			granule->coarse_scalefactors = (char) side_reader->read( 1 );
 			granule->select_htabB = (char) side_reader->read( 1 );
 			granule->sv_bound = 0;
 			// check for obvious problems/contradictions
 			if ( granule->main_data_bit == 0 ) {
-				if ( ( granule->big_val_pairs != 0 ) || ( granule->slength != 0 ) )
+				if ( ( granule->big_val_pairs != 0 ) || ( granule->slength != 0 ) || ( granule->scalefac_compress != 0 ) )
 					frame->n = -1; // mistreat frame number as trouble indicator :-)
 			}
 		}
@@ -2801,7 +2877,7 @@ INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size )
 	
 	// calculate total size of main (not aux) data (in byte)
 	frame->main_bits = 0;
-	for ( gr = 0; gr < 2; gr++ )
+	for ( gr = 0; gr < ngr; gr++ )
 		for ( ch = 0; ch < nch; ch++ )
 			frame->main_bits += frame->granules[ch][gr]->main_data_bit;
 	frame->main_size = (frame->main_bits+7)>>3;
@@ -2827,6 +2903,7 @@ INTERN inline mp3Frame* mp3_build_frame( void )
 	granuleInfo* granule;
 	int ch, gr;
 	int nch;
+	int ngr = mp3_ngr( i_mpeg );
 	
 	
 	// alloc memory for frame
@@ -2859,26 +2936,30 @@ INTERN inline mp3Frame* mp3_build_frame( void )
 	frame->bit_reservoir 	= 0;
 	frame->padbits			= i_padbits;
 	
-	// stuff that is known right now (# channels and fixed size)
+	// stuff that is known right now (# channels and fixed size).
+	// LSF side info is half-size: 9 (mono) / 17 (stereo) vs MPEG-1's 17 / 32.
+	const bool lsf_bf = ( frame->mpeg != MP3_V1_0 );
 	if ( frame->channels == MP3_MONO ) {
-		frame->fixed_size = ( frame->protection ) ? 4 + 2 + 17 : 4 + 17;
+		int sib = lsf_bf ? 9 : 17;
+		frame->fixed_size = ( frame->protection ) ? 4 + 2 + sib : 4 + sib;
 		frame->nchannels = 1; nch = frame->nchannels;
 	} else {
-		frame->fixed_size = ( frame->protection ) ? 4 + 2 + 32 : 4 + 32;
+		int sib = lsf_bf ? 17 : 32;
+		frame->fixed_size = ( frame->protection ) ? 4 + 2 + sib : 4 + sib;
 		frame->nchannels = 2; nch = frame->nchannels;
 	}
 	
-	// alloc memory for granules
+	// alloc memory for granules (MPEG-1: 2 per frame, MPEG-2/2.5 LSF: 1)
 	frame->granules = (granuleInfo***) calloc( nch, sizeof( granuleInfo** ) );
 	for ( ch = 0; ch < nch; ch++ ) {
-		frame->granules[ch] = (granuleInfo**) calloc( 2, sizeof( granuleInfo* ) );
-		for ( gr = 0; gr < 2; gr++ )
+		frame->granules[ch] = (granuleInfo**) calloc( ngr, sizeof( granuleInfo* ) );
+		for ( gr = 0; gr < ngr; gr++ )
 			frame->granules[ch][gr] = (granuleInfo*) calloc( 1, sizeof( granuleInfo ) );
 	}
-	
+
 	// granule specific stuff
 	for ( ch = 0; ch < nch; ch++ ) {
-		for ( gr = 0; gr < 2; gr++ ) {
+		for ( gr = 0; gr < ngr; gr++ ) {
 			granule = frame->granules[ch][gr];
 			granule->share				= ( gr == 0 ) ? i_share : 0;
 			granule->window_switching	= i_sblocks;
@@ -2906,9 +2987,10 @@ INTERN inline bool mp3_append_frame( mp3Frame* frame )
 	// its own frame-chain build state (reset when this thread's lastframe==NULL).
 	static thread_local granuleInfo* lastgranule[2] = { NULL, NULL };
 	static thread_local int n = 0;
-	int ch;
-	
-	
+	int ch, gr;
+	int ngr = mp3_ngr( frame->mpeg );  // 2 for MPEG-1, 1 for MPEG-2/2.5
+
+
 	// insert frame into the frame chain, set up links between frames
 	// aux size correction has to take place elsewhere
 	if ( lastframe == NULL ) {
@@ -2922,18 +3004,23 @@ INTERN inline bool mp3_append_frame( mp3Frame* frame )
 		frame->prev = lastframe;
 	}
 	lastframe = frame;
-	
-	// set up links for granules between each other
+
+	// set up the per-channel doubly-linked granule chain across frames.
+	// Global granule number = frame_no * ngr + gr (MPEG-1: n<<1 | gr).
 	for ( ch = 0; ch < frame->nchannels; ch++ ) {
-		frame->granules[ch][0]->n = n<<1;
-		frame->granules[ch][1]->n = frame->granules[ch][0]->n|1;
-		frame->granules[ch][0]->next = frame->granules[ch][1];
-		frame->granules[ch][1]->prev = frame->granules[ch][0];
-		frame->granules[ch][0]->prev = lastgranule[ch];
-		frame->granules[ch][1]->next = NULL;
-		if ( lastgranule[ch] != NULL )
-			lastgranule[ch]->next = frame->granules[ch][0];
-		lastgranule[ch] = frame->granules[ch][1];
+		for ( gr = 0; gr < ngr; gr++ ) {
+			granuleInfo* g = frame->granules[ch][gr];
+			g->n = n * ngr + gr;
+			g->next = NULL;
+			if ( gr == 0 ) {
+				g->prev = lastgranule[ch];
+				if ( lastgranule[ch] != NULL ) lastgranule[ch]->next = g;
+			} else {
+				g->prev = frame->granules[ch][gr-1];
+				frame->granules[ch][gr-1]->next = g;
+			}
+		}
+		lastgranule[ch] = frame->granules[ch][ngr-1];
 	}
 	
 	// some generic stuff
@@ -2957,8 +3044,9 @@ INTERN inline bool mp3_discard_frame( mp3Frame* frame )
 	// discard all data in one frame
 	nch = frame->nchannels;
 	if ( frame->granules != NULL ) {
+		int ngr = mp3_ngr( frame->mpeg );  // MPEG-2/2.5 allocated only 1 granule
 		for ( ch = 0; ch < nch; ch++ ) {
-			for ( gr = 0; gr < 2; gr++ )
+			for ( gr = 0; gr < ngr; gr++ )
 				free ( frame->granules[ch][gr] );
 			free ( frame->granules[ch] );
 		}
@@ -2983,8 +3071,13 @@ INTERN inline bool mp3_mute_frame( mp3Frame* frame )
 	
 	
 	// mute a single frame -> dangerous, be careful!
+	// LSF has 1 granule and a 9-bit scalefac_compress, so it needs 5 bytes per
+	// granule (vs MPEG-1's 4 bytes holding a 4-bit slength).
 	nch = frame->nchannels;
-	ums = 2 + ( nch * 2 * 4 );
+	int ngr = mp3_ngr( frame->mpeg );
+	bool lsf = ( frame->mpeg != MP3_V1_0 );
+	int  gb  = lsf ? 5 : 4;
+	ums = 2 + ( nch * ngr * gb );
 	
 	// store reconstruction data
 	if ( unmute_data_size == 0 ) { // first alloc - no mem check needed 
@@ -3009,12 +3102,20 @@ INTERN inline bool mp3_mute_frame( mp3Frame* frame )
 	(*ptr++) |= (frame->bit_reservoir >> 8) & 0x1;
 	(*ptr++)  = (frame->bit_reservoir >> 0) & 0xFF;
 	for ( ch = 0; ch < nch; ch++ ) {
-		for ( gr = 0; gr < 2; gr++ ) {
+		for ( gr = 0; gr < ngr; gr++ ) {
 			granule = frame->granules[ch][gr];
-			(*ptr++) = (granule->main_data_bit >> 4) & 0xFF;
-			(*ptr++) = ( (granule->main_data_bit << 4) & 0xF0 ) | ( granule->slength & 0x0F );
-			(*ptr++) = (granule->big_val_pairs >> 1) & 0xFF;
-			(*ptr++) = (granule->big_val_pairs << 7) & 0x80;
+			if ( lsf ) { // 5 bytes: main_data_bit(12), big_val_pairs(9), scalefac_compress(9)
+				(*ptr++) = granule->main_data_bit & 0xFF;
+				(*ptr++) = (granule->main_data_bit >> 8) & 0x0F;
+				(*ptr++) = granule->big_val_pairs & 0xFF;
+				(*ptr++) = ( (granule->big_val_pairs >> 8) & 0x1 ) | ( ( (granule->scalefac_compress >> 8) & 0x1 ) << 1 );
+				(*ptr++) = granule->scalefac_compress & 0xFF;
+			} else { // 4 bytes: main_data_bit(12), slength(4), big_val_pairs(9)
+				(*ptr++) = (granule->main_data_bit >> 4) & 0xFF;
+				(*ptr++) = ( (granule->main_data_bit << 4) & 0xF0 ) | ( granule->slength & 0x0F );
+				(*ptr++) = (granule->big_val_pairs >> 1) & 0xFF;
+				(*ptr++) = (granule->big_val_pairs << 7) & 0x80;
+			}
 		}
 	}
 	// take count - careful this doesn't excede 255
@@ -3038,11 +3139,12 @@ INTERN inline bool mp3_mute_frame( mp3Frame* frame )
 	frame->main_bits = 0;
 	if ( frame->granules != NULL ) {
 		for ( ch = 0; ch < nch; ch++ ) {
-			for ( gr = 0; gr < 2; gr++ ) {
+			for ( gr = 0; gr < ngr; gr++ ) {
 				granule = frame->granules[ch][gr];
 				granule->main_data_bit = 0;
 				granule->big_val_pairs = 0;
 				granule->slength = 0;
+				granule->scalefac_compress = 0;
 				// fix region bounds
 				granule->region_bound[0] = 0;
 				granule->region_bound[1] = 0;
@@ -3070,8 +3172,11 @@ INTERN inline bool mp3_unmute_frame( mp3Frame* frame )
 	// restore a single frame to it's original, broken state
 	// enough fix data has to be present, channel mode has to be consistent
 	nch = g_nchannels;
-	ums = 2 + ( nch * 2 * 4 );
-	ptr = unmute_data + 1 + ( n_bad_first * ums ); 
+	int ngr = mp3_ngr( frame->mpeg );
+	bool lsf = ( frame->mpeg != MP3_V1_0 );
+	int  gb  = lsf ? 5 : 4;
+	ums = 2 + ( nch * ngr * gb );
+	ptr = unmute_data + 1 + ( n_bad_first * ums );
 	
 	// unmute frame - has to be done in order, too!
 	frame->privbit    = ((*ptr)>>7) & 0x1;
@@ -3080,13 +3185,23 @@ INTERN inline bool mp3_unmute_frame( mp3Frame* frame )
 	frame->bit_reservoir  = (*ptr++) << 8;
 	frame->bit_reservoir |= (*ptr++) << 0;
 	for ( ch = 0; ch < nch; ch++ ) {
-		for ( gr = 0; gr < 2; gr++ ) {
+		for ( gr = 0; gr < ngr; gr++ ) {
 			granule = frame->granules[ch][gr];
-			granule->main_data_bit = (*ptr++) << 4;
-			granule->main_data_bit |= (*ptr) >> 4;
-			granule->slength = (*ptr++) & 0x0F;
-			granule->big_val_pairs = (*ptr++) << 1;
-			granule->big_val_pairs |= (*ptr++) >> 7;
+			if ( lsf ) { // mirror of the 5-byte LSF layout in mp3_mute_frame
+				granule->main_data_bit  = (*ptr++);
+				granule->main_data_bit |= ( (*ptr++) & 0x0F ) << 8;
+				granule->big_val_pairs  = (*ptr++);
+				granule->big_val_pairs |= ( (*ptr) & 0x1 ) << 8;
+				granule->scalefac_compress = ( ( (*ptr++) >> 1 ) & 0x1 ) << 8;
+				granule->scalefac_compress |= (*ptr++);
+				granule->slength = 0;
+			} else {
+				granule->main_data_bit = (*ptr++) << 4;
+				granule->main_data_bit |= (*ptr) >> 4;
+				granule->slength = (*ptr++) & 0x0F;
+				granule->big_val_pairs = (*ptr++) << 1;
+				granule->big_val_pairs |= (*ptr++) >> 7;
+			}
 		}
 	} // no need to accomodate for the changed frame params - for now (!!!)
 	
@@ -3118,16 +3233,20 @@ INTERN inline unsigned char* mp3_build_fixed( mp3Frame* frame )
 	// preparations
 	memset( fixed, 0, 64 );
 	nch = frame->nchannels;
-	nsb = ( nch == 1 ) ? 17 : 32;
+	const bool lsf = ( frame->mpeg != MP3_V1_0 );
+	const int  ngr = mp3_ngr( frame->mpeg );
+	nsb = lsf ? ( ( nch == 1 ) ? 9 : 17 ) : ( ( nch == 1 ) ? 17 : 32 );
 	header = fixed + 0;
 	sideinfo = fixed + ( ( frame->protection ) ? 4 + 2 : 4 );
 	
 	
 	// --- frame header ---
 	
-	// insert data
+	// insert data. Base 0xE0 = the 3 top sync bits only, so the MPEG version
+	// (bits 4-3) is set by the OR below — was hardcoded 0xFA (=MPEG-1), which an
+	// OR cannot clear, forcing every reconstructed frame back to MPEG-1.
 	header[0]  = 0xFF;
-	header[1]  = 0xFA;
+	header[1]  = 0xE0;
 	header[1] |= frame->mpeg       << 3;
 	header[1] |= frame->layer      << 1;
 	header[1] |= frame->protection  ^ 1;
@@ -3148,20 +3267,23 @@ INTERN inline unsigned char* mp3_build_fixed( mp3Frame* frame )
 	// init abitwriter
 	side_writer = new abitwriter( 64 );
 	
-	// frame global side info
-	side_writer->write( frame->bit_reservoir, 9 );
-	side_writer->write( frame->padbits, (nch==1) ? 5 : 3 );
-	for ( ch = 0; ch < nch; ch++ )
-		side_writer->write( frame->granules[ch][0]->share, 4 );
-	
+	// frame global side info. LSF: 8-bit main_data_begin, 1/2 private bits, no scfsi.
+	side_writer->write( frame->bit_reservoir, lsf ? 8 : 9 );
+	side_writer->write( frame->padbits, lsf ? ( (nch==1) ? 1 : 2 ) : ( (nch==1) ? 5 : 3 ) );
+	if ( !lsf )
+		for ( ch = 0; ch < nch; ch++ )
+			side_writer->write( frame->granules[ch][0]->share, 4 );
+
 	// granule specific side info
-	for ( gr = 0; gr < 2; gr++ ) {
+	for ( gr = 0; gr < ngr; gr++ ) {
 		for ( ch = 0; ch < nch; ch++ ) {
 			granule = frame->granules[ch][gr];
 			side_writer->write( granule->main_data_bit, 12 );
 			side_writer->write( granule->big_val_pairs, 9 );
 			side_writer->write( granule->global_gain, 8 );
-			side_writer->write( granule->slength, 4 );
+			// LSF: 9-bit scalefac_compress; MPEG-1: 4-bit slength.
+			if ( lsf ) side_writer->write( granule->scalefac_compress, 9 );
+			else       side_writer->write( granule->slength, 4 );
 			side_writer->write( granule->window_switching, 1 );
 			if ( granule->window_switching == 0 ) { // for normal blocks
 				side_writer->write( granule->region_table[0], 5 );
@@ -3178,7 +3300,8 @@ INTERN inline unsigned char* mp3_build_fixed( mp3Frame* frame )
 				side_writer->write( granule->sb_gain[1], 3 );
 				side_writer->write( granule->sb_gain[2], 3 );
 			}
-			side_writer->write( granule->preemphasis, 1 );
+			// LSF has no preflag.
+			if ( !lsf ) side_writer->write( granule->preemphasis, 1 );
 			side_writer->write( granule->coarse_scalefactors, 1 );
 			side_writer->write( granule->select_htabB, 1 );
 		}
@@ -3407,8 +3530,8 @@ INTERN inline granuleData*** mp3_decode_frame( huffman_reader* dec, mp3Frame* fr
 	}
 	
 	
-	// decode frame
-	for ( gr = 0; gr < 2; gr++ ) {
+	// decode frame (MPEG-1: 2 granules, MPEG-2/2.5: 1)
+	for ( gr = 0; gr < mp3_ngr( frame->mpeg ); gr++ ) {
 		for ( ch = 0; ch < frame->nchannels; ch++ ) {
 			// --- preparations ---
 			granule = frame->granules[ch][gr];
@@ -3430,8 +3553,17 @@ INTERN inline granuleData*** mp3_decode_frame( huffman_reader* dec, mp3Frame* fr
 			region_tables = granule->region_table;
 			
 			// --- scale factors ---
+			if ( frame->mpeg != MP3_V1_0 ) {
+				// MPEG-2/2.5 (LSF) scalefactors: read scfcnt[g] values of scfsz[g]
+				// bits, linearly, no sharing. Stored raw for lossless reconstruction.
+				int scfsz[ 4 ], scfcnt[ 4 ];
+				mp3_lsf_scf_params( frame, granule, ch, scfsz, scfcnt );
+				for ( g = 0; g < 4; g++ )
+					for ( p = 0; p < scfcnt[ g ]; p++ )
+						*(scfs++) = dec->read_bits( scfsz[ g ] );
+			}
 			// read long block scalefactors (with sharing)
-			if ( granule->block_type != SHORT_BLOCK ) {
+			else if ( granule->block_type != SHORT_BLOCK ) {
 				// get sharing params if any
 				share = ( gr ) ? frame->granules[ch][0]->share : 0;
 				// read 21 (max) scalefactors
@@ -3559,6 +3691,10 @@ INTERN inline bool pmp_write_header( iostream* str )
 	header[3] |= ( (i_bit_res==0) ? 0 : 1 ) << 7; // bit reservoir
 	header[3] |= ( (i_sb_diff==0) ? 0 : 1 ) << 6; // special block diffs
 	header[3] |= ( (n_bad_first>0) ? 1 : 0 ) << 5; // bad first frames
+	// v1.3: MPEG version (2 bits) in the previously-free low bits, so MPEG-2/2.5
+	// Layer III can be reconstructed. Old v1.1/v1.2 readers ignore byte 3 low
+	// bits; v1.3+ reads them only when the archive version says they exist.
+	header[3] |= ( i_mpeg & 0x3 ) << 0; // 3=MPEG-1, 2=MPEG-2, 0=MPEG-2.5
 	
 	// store # of frames in nframes[] in little endian
 	// yup, that's a waste, but - so what?
@@ -3629,8 +3765,10 @@ INTERN inline bool pmp_read_header( iostream* str )
 	i_sb_diff		=  ((header[3]>>6)&0x1);
 	n_bad_first		=  (header[3]>>5)&0x1;
 	
-	// set nframes known i_variables
-	i_mpeg			= MP3_V1_0;
+	// set nframes known i_variables.
+	// v1.3+ archives store the MPEG version in byte 3 low bits; older archives
+	// (v1.1/v1.2) only ever held MPEG-1, so default to that for them.
+	i_mpeg			= ( pmp_archive_version >= 13 ) ? (char)( header[3] & 0x3 ) : MP3_V1_0;
 	i_layer			= LAYER_III;
 	i_padbits		= 0;
 	i_mixed			= 0;
@@ -3662,8 +3800,8 @@ INTERN inline bool pmp_read_header( iostream* str )
 	
 	// make some safe assumptions
 	g_nchannels = ( i_channels == MP3_MONO ) ? 1 : 2;  // number of channels
-	g_samplerate = mp3_samplerate_table[(int)i_samplerate];  // sample rate
-	g_bitrate = ( i_bitrate == -1 ) ? 0 : mp3_bitrate_table[(int)i_bitrate]; // bit rate
+	g_samplerate = samplerate_table[(int)i_mpeg][(int)i_samplerate];  // sample rate (per MPEG version)
+	g_bitrate = ( i_bitrate == -1 ) ? 0 : bitrate_table[(int)i_mpeg][LAYER_III][(int)i_bitrate]; // bit rate
 	
 	
 	return true;
@@ -4181,9 +4319,12 @@ INTERN inline bool pmp_encode_slength( aricoder* enc )
 	int c;
 	
 	
-	// set up model (one model for both channels, flush in between)
-	model = INIT_MODEL_S( 16, (GG_CONTEXT_SIZE > 16 ) ? GG_CONTEXT_SIZE : 16, 2 );
-	
+	// set up model. LSF stores the 9-bit scalefac_compress (0..511); MPEG-1 the
+	// 4-bit slength (0..15). One model for both channels, flush in between.
+	const bool lsf = ( i_mpeg != MP3_V1_0 );
+	const int  nsym = lsf ? 512 : 16;
+	model = INIT_MODEL_S( nsym, (GG_CONTEXT_SIZE > nsym ) ? GG_CONTEXT_SIZE : nsym, 2 );
+
 	// encoding start
 	for ( ch = 0; ch < g_nchannels; ch++ ) {
 		// reset and flush model
@@ -4192,7 +4333,7 @@ INTERN inline bool pmp_encode_slength( aricoder* enc )
 		// encode one channel
 		for ( granule = firstframe->granules[ch][0]; granule != NULL; granule = granule->next ) {
 			shift_model( model, *(gg_ctx++), c );
-			c = granule->slength;
+			c = lsf ? granule->scalefac_compress : granule->slength;
 			encode_ari( enc, model, c );
 		}
 	}
@@ -4217,9 +4358,11 @@ INTERN inline bool pmp_decode_slength( aricoder* dec )
 	int c;
 	
 	
-	// set up model (one model for both channels, flush in between)
-	model = INIT_MODEL_S( 16, (GG_CONTEXT_SIZE > 16 ) ? GG_CONTEXT_SIZE : 16, 2 );
-	
+	// set up model (mirror of encoder: 512 symbols for LSF scalefac_compress).
+	const bool lsf = ( i_mpeg != MP3_V1_0 );
+	const int  nsym = lsf ? 512 : 16;
+	model = INIT_MODEL_S( nsym, (GG_CONTEXT_SIZE > nsym ) ? GG_CONTEXT_SIZE : nsym, 2 );
+
 	// decoding start
 	for ( ch = 0; ch < g_nchannels; ch++ ) {
 		// reset and flush model
@@ -4229,7 +4372,7 @@ INTERN inline bool pmp_decode_slength( aricoder* dec )
 		for ( granule = firstframe->granules[ch][0]; granule != NULL; granule = granule->next ) {
 			shift_model( model, *(gg_ctx++), c );
 			c = decode_ari( dec, model );
-			granule->slength = c;
+			if ( lsf ) granule->scalefac_compress = c; else granule->slength = c;
 		}
 	}
 	
@@ -4482,9 +4625,9 @@ INTERN inline bool pmp_decode_region_data( aricoder* dec )
 				granule->region1_size = decode_ari( dec, mod_s1 );
 				// set region 1/2 bounds
 				granule->region_bound[0] =
-					mp3_bandwidth_bounds[(int)i_samplerate][s_r0+1];
+					bandwidth_bounds[(int)i_mpeg][(int)i_samplerate][s_r0+1];
 				granule->region_bound[1] =
-					mp3_bandwidth_bounds[(int)i_samplerate][s_r0+granule->region1_size+2];
+					bandwidth_bounds[(int)i_mpeg][(int)i_samplerate][s_r0+granule->region1_size+2];
 				// set bv bound and check other bounds
 				granule->region_bound[2] = CLAMPED( 0, 576, granule->big_val_pairs << 1 );
 				if ( granule->region_bound[0] > granule->region_bound[2] ) {
@@ -4500,7 +4643,7 @@ INTERN inline bool pmp_decode_region_data( aricoder* dec )
 				granule->region1_size = 0;
 				// set region bound
 				granule->region_bound[0] =
-					mp3_bandwidth_bounds[(int)i_samplerate][8];
+					bandwidth_bounds[(int)i_mpeg][(int)i_samplerate][8];
 				// decode bv pairs, set bound and check r0 bound
 				mod_bv->shift_context( 0 );
 				granule->big_val_pairs = decode_ari( dec, mod_bv );
@@ -4515,7 +4658,7 @@ INTERN inline bool pmp_decode_region_data( aricoder* dec )
 				granule->region1_size = 0;
 				// set region bound
 				granule->region_bound[0] =
-					mp3_bandwidth_bounds_short[(int)i_samplerate][9/3] * 3;
+					bandwidth_bounds_short[(int)i_mpeg][(int)i_samplerate][9/3] * 3;
 				// decode bv pairs, set bound and check r0 bound
 				mod_bv->shift_context( 1 );
 				granule->big_val_pairs = decode_ari( dec, mod_bv );
@@ -4958,7 +5101,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	unsigned char ctx_aux = 0;
 	unsigned char ctx_pad = 0;
 	// statistical models
-	model_s* mod_scf[2][4][10]; // scalefactors
+	model_s* mod_scf[2][5][10]; // scalefactors
 	model_s* mod_abv[2][8][32]; // absolutes big values <= 15
 	model_b* mod_asv[2][8][2]; // absolulte small values
 	model_b* mod_sgn[2][8]; // signs
@@ -5027,6 +5170,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 			mod_scf[ch][1][g] = INIT_MODEL_S(  4, 16, 2 );
 			mod_scf[ch][2][g] = INIT_MODEL_S(  8, 16, 2 );
 			mod_scf[ch][3][g] = INIT_MODEL_S( 16, 16, 2 );
+				mod_scf[ch][4][g] = INIT_MODEL_S( 32, 16, 2 ); // LSF intensity-stereo scf_size==5
 		}
 		for ( flags = 0x0; flags < ( (j_coding&&ch) ? 0x8 : 0x2 ); flags++ ) {
 			mod_abv[ch][flags][ 0] = NULL;
@@ -5074,9 +5218,9 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	// --- PRE-PROCESSING PREPARATIONS: ALLOCATION OF MEMORY ---
 	for ( ch = 0; ch < g_nchannels; ch++ ) {
 		// alloc memory
-		scf_c[ch]       = ( unsigned char* ) calloc(  21, sizeof( char ) );
-		scf_l_long[ch]  = ( unsigned char* ) calloc(  21, sizeof( char ) );
-		scf_l_short[ch] = ( unsigned char* ) calloc(  21, sizeof( char ) );
+		scf_c[ch]       = ( unsigned char* ) calloc(  40, sizeof( char ) ); // 40: LSF short needs up to 36
+		scf_l_long[ch]  = ( unsigned char* ) calloc(  40, sizeof( char ) );
+		scf_l_short[ch] = ( unsigned char* ) calloc(  40, sizeof( char ) );
 		abs_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
 		sgn_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
 		len_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
@@ -5102,9 +5246,9 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	
 	// --- MAIN PROCESSING LOOP: ENCODING AND DECODING ---
 	for ( frame = firstframe; frame != NULL; frame = frame->next, bitp = 0 ) {
-		for ( gr = 0; gr < 2; gr++ ) {
+		for ( gr = 0; gr < mp3_ngr( frame->mpeg ); gr++ ) {
 			for ( ch = 0; ch < g_nchannels; ch++ ) {
-				
+
 				// --- MAIN DATA DECODING: PREPARATIONS ---
 				// initialize shortcuts
 				granule = frame->granules[ch][gr];
@@ -5136,8 +5280,35 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 				
 				
 				// ---> SCALEFACTOR PROCESSING <---
-				if ( !sbl ) {
-					
+				if ( frame->mpeg != MP3_V1_0 ) {
+
+					// --- SCALEFACTOR READING/ENCODING: MPEG-2/2.5 (LSF) ---
+					// No sharing, no long/short distinction here: scfcnt[g] values of
+					// scfsz[g] bits, linearly. Reuses mod_scf (sl 1-4); sl=5 only
+					// occurs under intensity stereo, not yet supported.
+					int scfsz[ 4 ], scfcnt[ 4 ], j;
+					mp3_lsf_scf_params( frame, granule, ch, scfsz, scfcnt );
+					scf = scf_c[ch];
+					scf_prev = scf_l_long[ch];
+					ctx_scf = 0;
+					for ( g = 0, p = 0; g < 4; g++ ) {
+						sl = scfsz[ g ];
+						if ( sl == 0 ) {
+							for ( j = 0; j < scfcnt[ g ]; j++, p++ ) scf[ p ] = 0;
+						} else {
+							mod_sfc = mod_scf[ch][ sl-1 ][ g ];
+							for ( j = 0; j < scfcnt[ g ]; j++, p++ ) {
+								scf[ p ] = huffman->read_bits( sl );
+								shift_model( mod_sfc, ctx_scf, scf_prev[ p ] );
+								encode_ari( enc, mod_sfc, scf[ p ] );
+								ctx_scf = scf[ p ];
+							}
+						}
+					}
+					swap = scf_c[ch]; scf_c[ch] = scf_l_long[ch]; scf_l_long[ch] = swap;
+
+				} else if ( !sbl ) {
+
 					// --- SCALEFACTOR READING/ENCODING: LONG BLOCKS ---
 					scf = scf_c[ch];
 					scf_prev = scf_l_long[ch];
@@ -5527,7 +5698,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	delete( mod_btr );
 	delete( mod_res );
 	for ( ch = 0; ch < g_nchannels; ch++ ) {
-		for ( sl = 0; sl < 4; sl++ )
+		for ( sl = 0; sl < 5; sl++ )
 			for ( g = 0; g < 10; g++ )
 				delete( mod_scf[ch][sl][g] );
 		for ( flags = 0x0; flags < ( (j_coding&&ch) ? 0x8 : 0x2 ); flags++ ) {
@@ -5610,7 +5781,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 	unsigned char ctx_aux = 0;
 	unsigned char ctx_pad = 0;
 	// statistical models
-	model_s* mod_scf[2][4][10];
+	model_s* mod_scf[2][5][10];
 	model_s* mod_abv[2][8][32];
 	model_b* mod_asv[2][8][2];
 	model_b* mod_sgn[2][8];
@@ -5631,7 +5802,6 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 	model_s* mod_sfc;
 	// lookup tables
 	const int* bitrate_pred = mp3_bitrate_pred[(int)i_samplerate];
-	const int* frame_size = mp3_frame_size_table[(int)i_samplerate];
 	// huffman encoder
 	huffman_writer* huffman;
 	// mp3 encoding settings
@@ -5680,6 +5850,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 			mod_scf[ch][1][g] = INIT_MODEL_S( 4, 16, 2 );
 			mod_scf[ch][2][g] = INIT_MODEL_S( 8, 16, 2 );
 			mod_scf[ch][3][g] = INIT_MODEL_S( 16, 16, 2 );
+				mod_scf[ch][4][g] = INIT_MODEL_S( 32, 16, 2 ); // LSF intensity-stereo scf_size==5
 		}
 		for ( flags = 0x0; flags < ( (j_coding&&ch) ? 0x8 : 0x2 ); flags++ ) {
 			mod_abv[ch][flags][ 0] = NULL;
@@ -5727,9 +5898,9 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 	// --- PRE-PROCESSING PREPARATIONS: ALLOCATION OF MEMORY ---
 	for ( ch = 0; ch < g_nchannels; ch++ ) {
 		// alloc memory
-		scf_c[ch]       = ( unsigned char* ) calloc(  21, sizeof( char ) );
-		scf_l_long[ch]  = ( unsigned char* ) calloc(  21, sizeof( char ) );
-		scf_l_short[ch] = ( unsigned char* ) calloc(  21, sizeof( char ) );
+		scf_c[ch]       = ( unsigned char* ) calloc(  40, sizeof( char ) ); // 40: LSF short needs up to 36
+		scf_l_long[ch]  = ( unsigned char* ) calloc(  40, sizeof( char ) );
+		scf_l_short[ch] = ( unsigned char* ) calloc(  40, sizeof( char ) );
 		abs_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
 		sgn_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
 		len_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
@@ -5757,9 +5928,9 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 	for ( frame = firstframe; frame != NULL; frame = frame->next, bitp = 0 ) {
 		// record main index
 		frame->main_index = huffman->getpos();
-		for ( gr = 0; gr < 2; gr++ ) {
+		for ( gr = 0; gr < mp3_ngr( frame->mpeg ); gr++ ) {
 			for ( ch = 0; ch < g_nchannels; ch++ ) {
-				
+
 				// --- MAIN DATA DECODING: PREPARATIONS ---
 				// initialize shortcuts
 				granule = frame->granules[ch][gr];
@@ -5790,13 +5961,38 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 				
 				
 				// ---> SCALEFACTOR PROCESSING <---
-				if ( !sbl ) {
-					
+				if ( frame->mpeg != MP3_V1_0 ) {
+
+					// --- SCALEFACTOR DECODING/WRITING: MPEG-2/2.5 (LSF) ---
+					// Mirror of the encoder: scfcnt[g] values of scfsz[g] bits, linear.
+					int scfsz[ 4 ], scfcnt[ 4 ], j;
+					mp3_lsf_scf_params( frame, granule, ch, scfsz, scfcnt );
+					scf = scf_c[ch];
+					scf_prev = scf_l_long[ch];
+					ctx_scf = 0;
+					for ( g = 0, p = 0; g < 4; g++ ) {
+						sl = scfsz[ g ];
+						if ( sl == 0 ) {
+							for ( j = 0; j < scfcnt[ g ]; j++, p++ ) scf[ p ] = 0;
+						} else {
+							mod_sfc = mod_scf[ch][ sl-1 ][ g ];
+							for ( j = 0; j < scfcnt[ g ]; j++, p++ ) {
+								shift_model( mod_sfc, ctx_scf, scf_prev[ p ] );
+								scf[ p ] = decode_ari( dec, mod_sfc );
+								huffman->write_bits( scf[ p ], sl );
+								ctx_scf = scf[ p ];
+							}
+						}
+					}
+					swap = scf_c[ch]; scf_c[ch] = scf_l_long[ch]; scf_l_long[ch] = swap;
+
+				} else if ( !sbl ) {
+
 					// --- SCALEFACTOR DECODING/WRITING: LONG BLOCKS ---
 					scf = scf_c[ch];
 					scf_prev = scf_l_long[ch];
 					ctx_scf = 0;
-					
+
 					// decode/write 21 scalefactors with/without sharing
 					for ( g = 0, p = 0; g < 4; g++ ) {
 						sl = slen[ ( g < 2 ) ? 0 : 1 ];
@@ -6075,9 +6271,8 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 			mod_btr->shift_context( bitrate_pred[ frame->main_size ] );
 			frame->bits = decode_ari( dec, mod_btr );
 		}
-		// calculate size of frame - use the lookup table
-		frame->frame_size = frame_size[(int)frame->bits];
-		if ( frame->padding ) frame->frame_size++;
+		// calculate size of frame (MPEG-1 via table, MPEG-2/2.5 via formula)
+		frame->frame_size = mp3_frame_bytes( i_mpeg, i_samplerate, frame->bits, frame->padding );
 		
 		
 		// ---> RECONSTRUCTION INFORMATION: AUX DATA AND PADDING <---
@@ -6174,7 +6369,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 	delete( mod_btr );
 	delete( mod_res );
 	for ( ch = 0; ch < g_nchannels; ch++ ) {
-		for ( sl = 0; sl < 4; sl++ )
+		for ( sl = 0; sl < 5; sl++ )
 			for ( g = 0; g < 10; g++ )
 				delete( mod_scf[ch][sl][g] );
 		for ( flags = 0x0; flags < ( (j_coding&&ch) ? 0x8 : 0x2 ); flags++ ) {
@@ -6237,7 +6432,7 @@ INTERN inline bool pmp_unstore_unmute_data( iostream* str )
 	// read # of of muted frames, set data size
 	str->read( &n, sizeof( char ), 1 );
 	if ( str->chkeof() ) n = 0;
-	unmute_data_size = 1 + n * ( 2 + ( g_nchannels * 2 * 4 ) );
+	unmute_data_size = 1 + n * ( 2 + ( g_nchannels * mp3_ngr( i_mpeg ) * ( ( i_mpeg != MP3_V1_0 ) ? 5 : 4 ) ) );
 	
 	// alloc memory for unmute data
 	unmute_data = (unsigned char*) calloc( unmute_data_size, sizeof( char ) );
@@ -6492,6 +6687,16 @@ INTERN const char* pmp_channel_label( void )
 	}
 }
 
+INTERN const char* pmp_format_label( void )
+{
+	switch ( i_mpeg ) {
+		case MP3_V1_0:	return "MPEG-1 Layer III";
+		case MP3_V2_0:	return "MPEG-2 Layer III";
+		case MP3_V2_5:	return "MPEG-2.5 Layer III";
+		default:		return "MPEG Layer III";
+	}
+}
+
 // 'list': show PMP archive info without decompressing the audio.
 // Only the header + per-frame side info is read (pmp_read_header), never the
 // arithmetic-coded main data, so this is cheap.
@@ -6504,12 +6709,13 @@ INTERN bool list_pmp( void )
 	str_in->read( &b, 1, 1 );	// magic byte 1
 	str_in->read( &b, 1, 1 );	// version byte
 	int vmaj = b / 10, vmin = b % 10;
+	pmp_archive_version = b;	// so pmp_read_header reads the MPEG-version bits (v1.3+)
 
 	if ( !pmp_read_header( str_in ) ) return false;
 
 	fprintf( msgout, "  version  : v%i.%i\n", vmaj, vmin );
 	fprintf( msgout, "  packed   : %s\n", pmp_human_size( sz ).c_str() );
-	fprintf( msgout, "  format   : MPEG-1 Layer III\n" );
+	fprintf( msgout, "  format   : %s\n", pmp_format_label() );
 	fprintf( msgout, "  frames   : %i\n", g_nframes );
 	fprintf( msgout, "  channels : %i (%s)\n", g_nchannels, pmp_channel_label() );
 	fprintf( msgout, "  rate     : %i Hz\n", g_samplerate );
@@ -6526,7 +6732,7 @@ INTERN bool list_pmp( void )
 INTERN bool stats_mp3( void )
 {
 	fprintf( msgout, "  size     : %s\n", pmp_human_size( (long long) mp3filesize ).c_str() );
-	fprintf( msgout, "  format   : MPEG-1 Layer III\n" );
+	fprintf( msgout, "  format   : %s\n", pmp_format_label() );
 	fprintf( msgout, "  frames   : %i\n", g_nframes );
 	fprintf( msgout, "  channels : %i (%s)\n", g_nchannels, pmp_channel_label() );
 	fprintf( msgout, "  rate     : %i Hz\n", g_samplerate );

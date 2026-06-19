@@ -66,6 +66,7 @@ struct granuleInfo {
 	short big_val_pairs;
 	short global_gain;
 	char  slength;
+	short scalefac_compress;	// MPEG-2/2.5 LSF: 9-bit scalefac_compress (MPEG-1 uses slength)
 	char  window_switching;
 	char  preemphasis;
 	char  coarse_scalefactors;
@@ -170,7 +171,7 @@ static const int samplerate_table[4][4] =
 	{44100, 48000, 32000, -1} // MPEG 1.0
 };
 // shortcut for MPEG 1 LAYER III
-static const int* mp3_samplerate_table = samplerate_table[MP3_V1_0];
+[[maybe_unused]] static const int* mp3_samplerate_table = samplerate_table[MP3_V1_0];
 
 
 /* -----------------------------------------------
@@ -204,7 +205,7 @@ static const int bitrate_table[4][4][16] =
 	}
 };
 // shortcut for MPEG 1 LAYER III
-static const int* mp3_bitrate_table = bitrate_table[MP3_V1_0][LAYER_III];
+[[maybe_unused]] static const int* mp3_bitrate_table = bitrate_table[MP3_V1_0][LAYER_III];
 
 
 /* -----------------------------------------------
@@ -318,7 +319,7 @@ static const int frame_size_table[4][4][4][16] =
 	}
 };
 // shortcut for MPEG 1 LAYER III
-static const int* mp3_frame_size_table[ 4 ] = 
+[[maybe_unused]] static const int* mp3_frame_size_table[ 4 ] =
 {
 	frame_size_table[MP3_V1_0][LAYER_III][0],
 	frame_size_table[MP3_V1_0][LAYER_III][1],
@@ -493,14 +494,14 @@ static const int* mp3_bandwidth_table_short[4] =
 	bandwidth_table_short[MP3_V1_0][2],
 	bandwidth_table_short[MP3_V1_0][3]
 };*/
-static const int* mp3_bandwidth_bounds[4] =
+[[maybe_unused]] static const int* mp3_bandwidth_bounds[4] =
 {
 	bandwidth_bounds[MP3_V1_0][0],
 	bandwidth_bounds[MP3_V1_0][1],
 	bandwidth_bounds[MP3_V1_0][2],
 	bandwidth_bounds[MP3_V1_0][3]
 };
-static const int* mp3_bandwidth_bounds_short[4] =
+[[maybe_unused]] static const int* mp3_bandwidth_bounds_short[4] =
 {
 	bandwidth_bounds_short[MP3_V1_0][0],
 	bandwidth_bounds_short[MP3_V1_0][1],
