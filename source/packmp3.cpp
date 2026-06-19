@@ -6839,7 +6839,8 @@ INTERN const unsigned char l2_ba_codetab[92] = {
 
 // unified encode/decode of one field (mode 0=encode from br, 1=decode to bw)
 struct l2x { int mode; abitreader* br; abitwriter* bw; aricoder* ar;
-	model_s *mHdr,*mBA,*mSC,*mSF,*mS0,*mS1,*mAnc; };
+	model_s *mHdr,*mBA,*mSC,*mSF,*mS0,*mS1,*mAnc;
+	unsigned char baprev[64]; unsigned char scfprev[64]; unsigned char smpprev[64]; };	// per band*ch history
 
 INTERN inline int l2_f( l2x& c, model_s* m, int ctx, int nb )
 {
@@ -6850,9 +6851,22 @@ INTERN inline int l2_f( l2x& c, model_s* m, int ctx, int nb )
 	return v;
 }
 
-// sample value (byte-split LSB-first; model context = bit width)
-INTERN inline unsigned l2_smp( l2x& c, int nb )
+// two-context field (e.g. spatial + temporal prediction)
+INTERN inline int l2_f2( l2x& c, model_s* m, int c1, int c2, int nb )
 {
+	m->shift_context( c1 ); m->shift_context( c2 );
+	int v;
+	if ( c.mode==0 ) { v = (int) c.br->read( nb ); encode_ari( c.ar, m, v ); }
+	else             { v = decode_ari( c.ar, m ); c.bw->write( v, nb ); }
+	return v;
+}
+
+// sample value (byte-split LSB-first; model context = bit width).
+// A previous-sample context was tried but over-contextualised (sparse 256x256
+// contexts) and hurt ratio, so the simple per-width model is kept.
+INTERN inline unsigned l2_smp( l2x& c, int nb, int idx )
+{
+	(void) idx;
 	if ( c.mode==0 ) {
 		unsigned v = c.br->read( nb );
 		c.mS0->shift_context( nb ); encode_ari( c.ar, c.mS0, v & 0xFF );
@@ -6876,24 +6890,26 @@ INTERN void l2_xform_frame( l2x& c, const unsigned char* hdr, int payload_bits )
 	unsigned char ba[64] = {0};	// per band*2 (+ch) bit-allocation value
 	int sc[64] = {0};			// scfcod
 
-	// --- bit allocation ---
+	// --- bit allocation (context = band + same-band code of previous frame) ---
 	int k=0, bw=0; const unsigned char* ct = l2_ba_codetab;
 	for ( int i=0;i<total;i++ ) {
 		if ( i==k ) { k+=alloc->band_count; bw=alloc->code_tab_width; ct=l2_ba_codetab+alloc->tab_offset; alloc++; }
-		ba[2*i]   = ct[ l2_f( c, c.mBA, i, bw ) ];
-		ba[2*i+1] = ( i<stereo ) ? ct[ l2_f( c, c.mBA, i, bw ) ] : 0;
+		int e0 = l2_f2( c, c.mBA, i, c.baprev[2*i], bw );   ba[2*i] = ct[e0]; c.baprev[2*i] = e0;
+		if ( i<stereo ) { int e1 = l2_f2( c, c.mBA, i, c.baprev[2*i+1], bw ); ba[2*i+1] = ct[e1]; c.baprev[2*i+1] = e1; }
+		else ba[2*i+1] = 0;
 	}
 	// --- scfcod (Layer II only reads 2 bits where ba>0) ---
 	for ( int i=0;i<2*total;i++ ) {
 		if ( ba[i] ) sc[i] = ( layer==1 ) ? 2 : l2_f( c, c.mSC, 0, 2 );
 		else sc[i] = 6;
 	}
-	// --- scalefactors (6-bit, count from scfcod mask 4+((19>>sc)&3)) ---
+	// --- scalefactors (context = within-frame prev + same-band prev frame) ---
 	for ( int i=0;i<2*total;i++ ) {
 		if ( !ba[i] ) continue;
 		int mask = 4 + ((19>>sc[i])&3);
-		int prev = 0;
-		for ( int m=4; m; m>>=1 ) if ( mask&m ) prev = l2_f( c, c.mSF, prev, 6 );
+		int prev = c.scfprev[i];
+		for ( int m=4; m; m>>=1 ) if ( mask&m ) prev = l2_f2( c, c.mSF, prev, c.scfprev[i], 6 );
+		c.scfprev[i] = prev;
 	}
 	// --- samples: 3 granules x 4 parts x band*ch (group_size per part) ---
 	for ( int igr=0; igr<3; igr++ )
@@ -6901,9 +6917,9 @@ INTERN void l2_xform_frame( l2x& c, const unsigned char* hdr, int payload_bits )
 	    for ( int i=0;i<2*total;i++ ) {
 		int b = ba[i];
 		if ( !b ) continue;
-		if ( b<17 ) { for ( int g=0; g<group_size; g++ ) l2_smp( c, b ); }
+		if ( b<17 ) { for ( int g=0; g<group_size; g++ ) l2_smp( c, b, i ); }
 		else { int nb = ( b==17 ) ? 5 : ( b==18 ) ? 7 : 10;	// grouped: 3/5/9 levels -> 5/7/10 bits
-			l2_smp( c, nb ); }
+			l2_smp( c, nb, i ); }
 	    }
 	// --- trailing slack / ancillary bits (preserve verbatim) ---
 	int used = ( c.mode==0 ) ? c.br->getpos() : c.bw->getpos();
@@ -6945,14 +6961,15 @@ INTERN bool l2_compress( void )
 	aricoder* enc = new aricoder( mem, 1 );
 	model_s* mPre = INIT_MODEL_S( 256, 256, 1 ); // pre/post bytes (order-1)
 	model_s* mHdr = INIT_MODEL_S( 256, 256, 1 ); // header+crc bytes (order-1)
-	model_s* mBA  = INIT_MODEL_S(  32,  32, 1 ); // bit-alloc code (ctx=band)
+	model_s* mBA  = INIT_MODEL_S(  32,  32, 2 ); // bit-alloc code (ctx=band)
 	model_s* mSC  = INIT_MODEL_S(   4,   4, 1 ); // scfcod
-	model_s* mSF  = INIT_MODEL_S(  64,  64, 1 ); // scalefactor (ctx=prev)
+	model_s* mSF  = INIT_MODEL_S(  64,  64, 2 ); // scalefactor (ctx=prev)
 	model_s* mS0  = INIT_MODEL_S( 256,  17, 1 ); // sample byte0 (ctx=nbits)
 	model_s* mS1  = INIT_MODEL_S( 256,  17, 1 ); // sample byte1
 	model_s* mAnc = INIT_MODEL_S( 256,   2, 1 ); // ancillary/slack
 	l2x c; c.mode=0; c.br=NULL; c.bw=NULL; c.ar=enc;
 	c.mHdr=mHdr; c.mBA=mBA; c.mSC=mSC; c.mSF=mSF; c.mS0=mS0; c.mS1=mS1; c.mAnc=mAnc;
+	memset( c.baprev, 0, sizeof(c.baprev) ); memset( c.scfprev, 0, sizeof(c.scfprev) ); memset( c.smpprev, 0, sizeof(c.smpprev) );
 	int ctx, i, f, z;
 	// pre (ID3/garbage)
 	ctx = 0; for ( i = 0; i < pre; i++ ) { mPre->shift_context( ctx ); encode_ari( enc, mPre, d[i] ); ctx = d[i]; }
@@ -7037,14 +7054,15 @@ INTERN bool l2_decompress( void )
 	aricoder* dec = new aricoder( str_in, 0 );
 	model_s* mPre = INIT_MODEL_S( 256, 256, 1 );
 	model_s* mHdr = INIT_MODEL_S( 256, 256, 1 );
-	model_s* mBA  = INIT_MODEL_S(  32,  32, 1 );
+	model_s* mBA  = INIT_MODEL_S(  32,  32, 2 );
 	model_s* mSC  = INIT_MODEL_S(   4,   4, 1 );
-	model_s* mSF  = INIT_MODEL_S(  64,  64, 1 );
+	model_s* mSF  = INIT_MODEL_S(  64,  64, 2 );
 	model_s* mS0  = INIT_MODEL_S( 256,  17, 1 );
 	model_s* mS1  = INIT_MODEL_S( 256,  17, 1 );
 	model_s* mAnc = INIT_MODEL_S( 256,   2, 1 );
 	l2x c; c.mode=1; c.br=NULL; c.bw=NULL; c.ar=dec;
 	c.mHdr=mHdr; c.mBA=mBA; c.mSC=mSC; c.mSF=mSF; c.mS0=mS0; c.mS1=mS1; c.mAnc=mAnc;
+	memset( c.baprev, 0, sizeof(c.baprev) ); memset( c.scfprev, 0, sizeof(c.scfprev) ); memset( c.smpprev, 0, sizeof(c.smpprev) );
 	int ctx, i, f, z; unsigned char b;
 
 	// pre
