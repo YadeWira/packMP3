@@ -6771,7 +6771,7 @@ INTERN inline int l2_frame_bytes( const unsigned char* h )
 	int mpeg1 = ( ver == 3 );
 	int kbps = 2 * (int) halfrate[ mpeg1 ][ layer-1 ][ br_i ];
 	unsigned sr = g_hz[ sr_i ] >> ( ( ver != 3 ) ? 1 : 0 ) >> ( ( ver == 0 ) ? 1 : 0 );
-	int samples = ( layer == 1 ) ? 384 : ( mpeg1 ? 1152 : 576 );
+	int samples = ( layer == 1 ) ? 384 : 1152;	// Layer I=384, Layer II=1152 (576 is Layer III LSF only)
 	int fb = samples * kbps * 125 / (int) sr;
 	if ( layer == 1 ) { fb &= ~3; fb += pad ? 4 : 0; }
 	else              { fb += pad ? 1 : 0; }
