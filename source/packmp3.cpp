@@ -109,6 +109,11 @@ INTERN bool uncompress_pmp( void );
 	----------------------------------------------- */
 
 INTERN inline int mp3_ngr( int mpeg );
+#if !defined(BUILD_LIB)
+INTERN bool l2_compress( void );	// Layer I/II separate codec (no Huffman, no bit reservoir)
+INTERN bool l2_decompress( void );
+INTERN inline int l2_frame_bytes( const unsigned char* h );
+#endif
 INTERN inline int mp3_frame_bytes( int mpeg, int samples, int bits, int padding );
 INTERN inline int mp3_lsf_scf_params( const mp3Frame* frame, const granuleInfo* granule, int ch, int scfsz[4], int scfcnt[4] );
 INTERN inline mp3Frame* mp3_read_frame( unsigned char* data, int max_size );
@@ -379,6 +384,7 @@ INTERN const char*  pmp_ext      = "pmp";
 INTERN const char*  mp3_ext      = "mp3";
 #endif
 INTERN const char   pmp_magic[] = { 'M', 'S' };
+INTERN const char   l2_magic[]  = { 'M', '2' };	// separate container for Layer I/II archives
 
 
 // ─── v1.2 Color support ──────────────────────────────────────────────────────
@@ -1166,7 +1172,7 @@ INTERN void process_ui( void )
 		// get specific action message
 		if ( filetype == F_UNK ) actionmsg = "unknown filetype";
 		else switch ( action ) {
-			case A_COMPRESS: ( filetype == F_MP3 ) ? actionmsg = "Compressing" : actionmsg = "Decompressing";
+			case A_COMPRESS: ( filetype == F_MP3 || filetype == F_MP2 ) ? actionmsg = "Compressing" : actionmsg = "Decompressing";
 				break;
 			case A_DUMP_SEPERATE: actionmsg = "Dumping binary data"; break;
 			case A_PGM_INFO: actionmsg = "Writing PGM"; break;
@@ -1241,7 +1247,7 @@ INTERN void process_ui( void )
 					#endif
 					const char* _fn = _sl ? _sl + 1 : filelist[ file_no ];
 					if ( errorlevel < err_tol ) {
-						if ( action == A_COMPRESS && filetype == F_MP3 ) {
+						if ( action == A_COMPRESS && ( filetype == F_MP3 || filetype == F_MP2 ) ) {
 							long long orig_kb = ( mp3filesize + 512 ) / 1024;
 							long long comp_kb = ( pmpfilesize + 512 ) / 1024;
 							double time_s = ( total >= 0 ) ? total / 1000.0 : 0.0;
@@ -1633,7 +1639,24 @@ INTERN void process_file( void )
 				break;
 			#endif
 		}
-	}	
+	}
+	#if !defined(BUILD_LIB)
+	// Layer I/II separate codec (only the compress/decompress action)
+	else if ( filetype == F_MP2 ) {
+		if ( action == A_COMPRESS ) {
+			execute( l2_compress );
+			if ( verify_lv > 0 ) {
+				execute( reset_buffers );
+				execute( swap_streams );
+				execute( l2_decompress );
+				execute( compare_output );
+			}
+		}
+	}
+	else if ( filetype == F_PL2 ) {
+		if ( action == A_COMPRESS ) execute( l2_decompress );
+	}
+	#endif
 	#if !defined(BUILD_LIB) && defined(DEV_BUILD)
 	// write error file if verify lv > 1
 	if ( ( verify_lv > 1 ) && ( errorlevel >= err_tol ) )
@@ -1737,14 +1760,16 @@ INTERN bool check_file( void )
 	}
 	
 	// check file id, determine filetype
-	if ( ( fileid[0] == pmp_magic[0] ) && ( fileid[1] == pmp_magic[1] ) ) {
-		// PMP marker -> file is PMP
-		filetype = F_PMP;
+	bool is_pmp = ( fileid[0] == pmp_magic[0] ) && ( fileid[1] == pmp_magic[1] );
+	bool is_pl2 = ( fileid[0] == (unsigned char) l2_magic[0] ) && ( fileid[1] == (unsigned char) l2_magic[1] );
+	if ( is_pmp || is_pl2 ) {
+		// PMP/M2 marker -> compressed archive (Layer III / Layer I-II)
+		filetype = is_pl2 ? F_PL2 : F_PMP;
 		// skip silently if compress-only: reset to F_UNK so process_file()
 		// does nothing (was a NULL-str_out crash when it tried to decode).
 		if ( compress_only ) { filetype = F_UNK; return false; }
-		// v1.2 'list' reads the header from the input stream only — no output
-		if ( action == A_LIST ) return true;
+		// v1.2 'list' reads the header from the input stream only — no output (L3 only)
+		if ( action == A_LIST && filetype == F_PMP ) return true;
 		// create filenames
 		if ( !pipe_on ) {
 			pmpfilename = (char*) calloc( strlen( filename ) + 1, sizeof( char ) );
@@ -1767,13 +1792,29 @@ INTERN bool check_file( void )
 		}
 	}
 	else {
-		// for all other cases we assume that file might be MPEG X LAYER Y
+		// input file: peek the first MPEG frame to route Layer III (main codec)
+		// vs Layer I/II (separate codec). Layer III -> F_MP3, Layer I/II -> F_MP2.
 		filetype = F_MP3;
+		{
+			unsigned char pk[ 8192 ];
+			str_in->rewind();
+			int pn = str_in->read( pk, 1, sizeof(pk) );
+			str_in->rewind();
+			for ( int p = 0; p + 4 <= pn; p++ ) {
+				if ( pk[p] != 0xFF || ( pk[p+1] & 0xE0 ) != 0xE0 ) continue;
+				int lb = ( pk[p+1] >> 1 ) & 0x3, ver = ( pk[p+1] >> 3 ) & 0x3;
+				int br = ( pk[p+2] >> 4 ) & 0xF, sr = ( pk[p+2] >> 2 ) & 0x3;
+				if ( lb == 0 || ver == 1 || br == 0 || br == 15 || sr == 3 ) continue; // invalid hdr
+				int layer = 4 - lb;	// 1=I, 2=II, 3=III
+				if ( layer == 1 || layer == 2 ) filetype = F_MP2;
+				break;
+			}
+		}
 		// skip silently if decompress-only: reset to F_UNK so process_file()
 		// does nothing (was a NULL-str_out crash when it tried to compress).
 		if ( decompress_only ) { filetype = F_UNK; return false; }
-		// v1.2 'stats' reads the MP3 only — no output file
-		if ( action == A_STATS ) return true;
+		// v1.2 'stats' reads the MP3 only — no output file (L3 only)
+		if ( action == A_STATS && filetype == F_MP3 ) return true;
 		// create filenames
 		if ( !pipe_on ) {
 			mp3filename = (char*) calloc( strlen( filename ) + 1, sizeof( char ) );
@@ -6696,6 +6737,150 @@ INTERN const char* pmp_format_label( void )
 		default:		return "MPEG Layer III";
 	}
 }
+
+/* ===========================================================================
+	Layer I/II separate codec (MUSICAM: subband, no Huffman, no bit reservoir)
+
+	Completely separate from the Layer III path. Layer I/II frames are self-
+	contained (no main_data_begin), so the file is pre + frames + post. v1.3:
+	lossless container — frame headers and payload are arithmetic-coded with
+	order-1 byte models (headers are near-constant -> tiny; payload modest).
+	Structured modelling of bit-allocation/scalefactors/samples is future work.
+	Archive magic is "M2" so it never collides with the Layer III "MS".
+   =========================================================================== */
+#if !defined(BUILD_LIB)
+INTERN inline void l2_put32( unsigned char* p, int v )
+{ p[0]=(v>>24)&0xFF; p[1]=(v>>16)&0xFF; p[2]=(v>>8)&0xFF; p[3]=v&0xFF; }
+INTERN inline int l2_get32( const unsigned char* p )
+{ return (p[0]<<24)|(p[1]<<16)|(p[2]<<8)|p[3]; }
+
+INTERN inline int l2_frame_bytes( const unsigned char* h )
+{
+	static const unsigned short halfrate[2][3][15] = {
+		{ {0,4,8,12,16,20,24,28,32,40,48,56,64,72,80},{0,4,8,12,16,20,24,28,32,40,48,56,64,72,80},{0,16,24,28,32,40,48,56,64,72,80,88,96,112,128} },
+		{ {0,16,20,24,28,32,40,48,56,64,80,96,112,128,160},{0,16,24,28,32,40,48,56,64,80,96,112,128,160,192},{0,16,32,48,64,80,96,112,128,144,160,176,192,208,224} }
+	};
+	static const unsigned g_hz[3] = { 44100, 48000, 32000 };
+	int ver   = ( h[1] >> 3 ) & 0x3;       // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+	int layer = 4 - ( ( h[1] >> 1 ) & 0x3 );  // 1=I, 2=II, 3=III
+	int br_i  = ( h[2] >> 4 ) & 0xF;
+	int sr_i  = ( h[2] >> 2 ) & 0x3;
+	int pad   = ( h[2] >> 1 ) & 0x1;
+	if ( layer < 1 || layer > 2 ) return 0;            // Layer I/II only
+	if ( br_i == 0 || br_i == 15 || sr_i == 3 ) return 0;  // free-format / invalid
+	int mpeg1 = ( ver == 3 );
+	int kbps = 2 * (int) halfrate[ mpeg1 ][ layer-1 ][ br_i ];
+	unsigned sr = g_hz[ sr_i ] >> ( ( ver != 3 ) ? 1 : 0 ) >> ( ( ver == 0 ) ? 1 : 0 );
+	int samples = ( layer == 1 ) ? 384 : ( mpeg1 ? 1152 : 576 );
+	int fb = samples * kbps * 125 / (int) sr;
+	if ( layer == 1 ) { fb &= ~3; fb += pad ? 4 : 0; }
+	else              { fb += pad ? 1 : 0; }
+	return fb;
+}
+
+// scan for the first valid Layer I/II frame from 'from'; -1 if none
+INTERN inline int l2_seek_frame( const unsigned char* d, int size, int from )
+{
+	for ( int p = from; p + 4 <= size; p++ )
+		if ( d[p] == 0xFF && ( d[p+1] & 0xE0 ) == 0xE0 && l2_frame_bytes( d + p ) > 0 )
+			return p;
+	return -1;
+}
+
+INTERN bool l2_compress( void )
+{
+	int fsize = str_in->getsize();
+	if ( fsize <= 0 ) { snprintf( errormessage, MSG_SIZE, "empty input" ); errorlevel = 2; return false; }
+	unsigned char* d = (unsigned char*) calloc( fsize, 1 );
+	if ( d == NULL ) { snprintf( errormessage, MSG_SIZE, MEM_ERRMSG ); errorlevel = 2; return false; }
+	str_in->rewind();
+	str_in->read( d, 1, fsize );
+
+	int pre = l2_seek_frame( d, fsize, 0 );
+	if ( pre < 0 ) { snprintf( errormessage, MSG_SIZE, "no Layer I/II frames found" ); errorlevel = 2; free( d ); return false; }
+
+	// walk contiguous frames
+	std::vector<int> foff;
+	int pos = pre;
+	while ( pos + 4 <= fsize ) {
+		if ( !( d[pos] == 0xFF && ( d[pos+1] & 0xE0 ) == 0xE0 ) ) break;
+		int fb = l2_frame_bytes( d + pos );
+		if ( fb <= 4 || pos + fb > fsize ) break;
+		foff.push_back( pos );
+		pos += fb;
+	}
+	int nframes = (int) foff.size();
+	int post_start = pos, post_size = fsize - post_start;
+	if ( nframes < 1 ) { snprintf( errormessage, MSG_SIZE, "no Layer I/II frames found" ); errorlevel = 2; free( d ); return false; }
+
+	// container header: magic(2) version(1) nframes(4) pre(4) post(4)
+	unsigned char hd[ 15 ];
+	hd[0] = l2_magic[0]; hd[1] = l2_magic[1]; hd[2] = appversion;
+	l2_put32( hd + 3, nframes ); l2_put32( hd + 7, pre ); l2_put32( hd + 11, post_size );
+	str_out->write( hd, 1, 15 );
+
+	aricoder* enc = new aricoder( str_out, 1 );
+	model_s* mH = INIT_MODEL_S( 256, 256, 1 ); // header bytes (order-1)
+	model_s* mD = INIT_MODEL_S( 256, 256, 1 ); // payload bytes (order-1)
+	int ctx, i, f, j;
+	// pre (ID3/garbage) -> data model
+	ctx = 0; for ( i = 0; i < pre; i++ ) { mD->shift_context( ctx ); encode_ari( enc, mD, d[i] ); ctx = d[i]; }
+	// frame headers (4 bytes each)
+	ctx = 0; for ( f = 0; f < nframes; f++ ) for ( j = 0; j < 4; j++ ) { unsigned char b = d[ foff[f]+j ]; mH->shift_context( ctx ); encode_ari( enc, mH, b ); ctx = b; }
+	// frame payloads (frame_size - 4 bytes each)
+	ctx = 0; for ( f = 0; f < nframes; f++ ) { int fb = l2_frame_bytes( d + foff[f] ); for ( j = 4; j < fb; j++ ) { unsigned char b = d[ foff[f]+j ]; mD->shift_context( ctx ); encode_ari( enc, mD, b ); ctx = b; } }
+	// trailing data
+	ctx = 0; for ( i = post_start; i < fsize; i++ ) { mD->shift_context( ctx ); encode_ari( enc, mD, d[i] ); ctx = d[i]; }
+
+	delete( enc ); delete( mH ); delete( mD );
+	mp3filesize = fsize;
+	pmpfilesize = str_out->getsize();
+	free( d );
+	return true;
+}
+
+INTERN bool l2_decompress( void )
+{
+	unsigned char hd[ 15 ];
+	str_in->rewind();
+	if ( str_in->read( hd, 1, 15 ) != 15 ) { snprintf( errormessage, MSG_SIZE, "truncated archive" ); errorlevel = 2; return false; }
+	if ( hd[0] != (unsigned char) l2_magic[0] || hd[1] != (unsigned char) l2_magic[1] ) { snprintf( errormessage, MSG_SIZE, "not a Layer I/II archive" ); errorlevel = 2; return false; }
+	int nframes = l2_get32( hd + 3 ), pre = l2_get32( hd + 7 ), post_size = l2_get32( hd + 11 );
+
+	aricoder* dec = new aricoder( str_in, 0 );
+	model_s* mH = INIT_MODEL_S( 256, 256, 1 );
+	model_s* mD = INIT_MODEL_S( 256, 256, 1 );
+	int ctx, i, f, k;
+	unsigned char b;
+
+	// pre
+	ctx = 0; for ( i = 0; i < pre; i++ ) { mD->shift_context( ctx ); b = (unsigned char) decode_ari( dec, mD ); str_out->write( &b, 1, 1 ); ctx = b; }
+	// headers first (need them to know payload sizes)
+	unsigned char* hbuf = (unsigned char*) calloc( ( nframes > 0 ? nframes : 1 ) * 4, 1 );
+	ctx = 0; for ( k = 0; k < nframes * 4; k++ ) { mH->shift_context( ctx ); hbuf[k] = (unsigned char) decode_ari( dec, mH ); ctx = hbuf[k]; }
+	// payload total
+	long tot = 0;
+	for ( f = 0; f < nframes; f++ ) { int fb = l2_frame_bytes( hbuf + f*4 ); tot += ( fb > 4 ) ? fb - 4 : 0; }
+	unsigned char* pbuf = (unsigned char*) calloc( ( tot > 0 ? tot : 1 ), 1 );
+	ctx = 0; for ( k = 0; k < tot; k++ ) { mD->shift_context( ctx ); pbuf[k] = (unsigned char) decode_ari( dec, mD ); ctx = pbuf[k]; }
+	// interleave header + payload per frame
+	long dp = 0;
+	for ( f = 0; f < nframes; f++ ) {
+		int fb = l2_frame_bytes( hbuf + f*4 );
+		str_out->write( hbuf + f*4, 1, 4 );
+		if ( fb > 4 ) { str_out->write( pbuf + dp, 1, fb - 4 ); dp += fb - 4; }
+	}
+	// trailing data
+	ctx = 0; for ( i = 0; i < post_size; i++ ) { mD->shift_context( ctx ); b = (unsigned char) decode_ari( dec, mD ); str_out->write( &b, 1, 1 ); ctx = b; }
+
+	delete( dec ); delete( mH ); delete( mD );
+	free( hbuf ); free( pbuf );
+	pmpfilesize = str_in->getsize();
+	mp3filesize = str_out->getsize();
+	return true;
+}
+#endif
+
 
 // 'list': show PMP archive info without decompressing the audio.
 // Only the header + per-frame side info is read (pmp_read_header), never the

@@ -29,6 +29,8 @@
 #define F_MP3				1
 #define F_PMP				2
 #define F_UNK				3
+#define F_MP2				4	// input MPEG Layer I/II (separate codec)
+#define F_PL2				5	// PMP archive holding Layer I/II ("M2" magic)
 
 // mpeg version defines
 #define MP3_V2_5			0
