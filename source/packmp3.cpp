@@ -6787,6 +6787,132 @@ INTERN inline int l2_seek_frame( const unsigned char* d, int size, int from )
 	return -1;
 }
 
+/* ---- Layer II structured model (M2): exact bitstream syntax ---- */
+
+INTERN inline int l2_kbps( const unsigned char* h )
+{
+	static const unsigned short halfrate[2][3][15] = {
+		{ {0,4,8,12,16,20,24,28,32,40,48,56,64,72,80},{0,4,8,12,16,20,24,28,32,40,48,56,64,72,80},{0,16,24,28,32,40,48,56,64,72,80,88,96,112,128} },
+		{ {0,16,20,24,28,32,40,48,56,64,80,96,112,128,160},{0,16,24,28,32,40,48,56,64,80,96,112,128,160,192},{0,16,32,48,64,80,96,112,128,144,160,176,192,208,224} }
+	};
+	int ver = (h[1]>>3)&0x3, layer = 4-((h[1]>>1)&0x3), br_i = (h[2]>>4)&0xF;
+	return 2 * (int) halfrate[ ver==3 ][ layer-1 ][ br_i ];
+}
+
+typedef struct { unsigned char tab_offset, code_tab_width, band_count; } l2_alloc_t;
+
+// subband-allocation table + total/stereo band counts (mirrors minimp3 L12_subband_alloc_table)
+INTERN const l2_alloc_t* l2_alloc_table( const unsigned char* h, int* total, int* stereo )
+{
+	static const l2_alloc_t L1[]    = { {76,4,32} };
+	static const l2_alloc_t L2M2[]  = { {60,4,4},{44,3,7},{44,2,19} };
+	static const l2_alloc_t L2M1[]  = { {0,4,3},{16,4,8},{32,3,12},{40,2,7} };
+	static const l2_alloc_t L2M1L[] = { {44,4,2},{44,3,10} };
+	int ver = (h[1]>>3)&0x3, layer = 4-((h[1]>>1)&0x3);
+	int mode = (h[3]>>6)&0x3, ext = (h[3]>>4)&0x3;
+	int sb = ( mode==3 ) ? 0 : ( mode==1 ) ? ((ext<<2)+4) : 32;	// 3=mono,1=joint,else stereo/dual
+	const l2_alloc_t* a; int nb;
+	if ( layer==1 ) { a=L1; nb=32; }
+	else if ( ver!=3 ) { a=L2M2; nb=30; }		// MPEG-2/2.5 Layer II
+	else {											// MPEG-1 Layer II
+		int sr=(h[2]>>2)&0x3;
+		int kbps = l2_kbps(h) >> ( (mode!=3) ? 1 : 0 );	// per-channel
+		if ( !kbps ) kbps=192;
+		a=L2M1; nb=27;
+		if ( kbps<56 ) { a=L2M1L; nb = (sr==2)?12:8; }
+		else if ( kbps>=96 && sr!=1 ) nb=30;
+	}
+	*total=nb; *stereo = (sb<nb)?sb:nb;
+	return a;
+}
+
+// code -> bit-allocation value table (minimp3 g_bitalloc_code_tab), 92 entries
+INTERN const unsigned char l2_ba_codetab[92] = {
+	0,17, 3, 4, 5,6,7, 8,9,10,11,12,13,14,15,16,
+	0,17,18, 3,19,4,5, 6,7, 8, 9,10,11,12,13,16,
+	0,17,18, 3,19,4,5,16,
+	0,17,18,16,
+	0,17,18,19, 4,5,6, 7,8, 9,10,11,12,13,14,15,
+	0,17,18, 3,19,4,5, 6,7, 8, 9,10,11,12,13,14,
+	0, 2, 3, 4, 5,6,7, 8,9,10,11,12,13,14,15,16
+};
+
+// unified encode/decode of one field (mode 0=encode from br, 1=decode to bw)
+struct l2x { int mode; abitreader* br; abitwriter* bw; aricoder* ar;
+	model_s *mHdr,*mBA,*mSC,*mSF,*mS0,*mS1,*mAnc; };
+
+INTERN inline int l2_f( l2x& c, model_s* m, int ctx, int nb )
+{
+	if ( m ) m->shift_context( ctx );
+	int v;
+	if ( c.mode==0 ) { v = (int) c.br->read( nb ); if ( m ) encode_ari( c.ar, m, v ); }
+	else             { v = m ? decode_ari( c.ar, m ) : (int) 0; c.bw->write( v, nb ); }
+	return v;
+}
+
+// sample value (byte-split LSB-first; model context = bit width)
+INTERN inline unsigned l2_smp( l2x& c, int nb )
+{
+	if ( c.mode==0 ) {
+		unsigned v = c.br->read( nb );
+		c.mS0->shift_context( nb ); encode_ari( c.ar, c.mS0, v & 0xFF );
+		if ( nb>8 ) { c.mS1->shift_context( nb ); encode_ari( c.ar, c.mS1, (v>>8)&0xFF ); }
+		return v;
+	} else {
+		unsigned v; c.mS0->shift_context( nb ); v = (unsigned) decode_ari( c.ar, c.mS0 );
+		if ( nb>8 ) { c.mS1->shift_context( nb ); v |= ((unsigned) decode_ari( c.ar, c.mS1 ))<<8; }
+		c.bw->write( v, nb ); return v;
+	}
+}
+
+// walk the Layer I/II frame syntax for one frame, encoding or decoding fields.
+// payload_bits = bits of payload (frame_size - fixed)*8; trailing slack stored raw.
+INTERN void l2_xform_frame( l2x& c, const unsigned char* hdr, int payload_bits )
+{
+	int total, stereo;
+	const l2_alloc_t* alloc = l2_alloc_table( hdr, &total, &stereo );
+	int layer = 4 - ((hdr[1]>>1)&0x3);
+	int group_size = ( layer==1 ) ? 1 : 3;
+	unsigned char ba[64] = {0};	// per band*2 (+ch) bit-allocation value
+	int sc[64] = {0};			// scfcod
+
+	// --- bit allocation ---
+	int k=0, bw=0; const unsigned char* ct = l2_ba_codetab;
+	for ( int i=0;i<total;i++ ) {
+		if ( i==k ) { k+=alloc->band_count; bw=alloc->code_tab_width; ct=l2_ba_codetab+alloc->tab_offset; alloc++; }
+		ba[2*i]   = ct[ l2_f( c, c.mBA, i, bw ) ];
+		ba[2*i+1] = ( i<stereo ) ? ct[ l2_f( c, c.mBA, i, bw ) ] : 0;
+	}
+	// --- scfcod (Layer II only reads 2 bits where ba>0) ---
+	for ( int i=0;i<2*total;i++ ) {
+		if ( ba[i] ) sc[i] = ( layer==1 ) ? 2 : l2_f( c, c.mSC, 0, 2 );
+		else sc[i] = 6;
+	}
+	// --- scalefactors (6-bit, count from scfcod mask 4+((19>>sc)&3)) ---
+	for ( int i=0;i<2*total;i++ ) {
+		if ( !ba[i] ) continue;
+		int mask = 4 + ((19>>sc[i])&3);
+		int prev = 0;
+		for ( int m=4; m; m>>=1 ) if ( mask&m ) prev = l2_f( c, c.mSF, prev, 6 );
+	}
+	// --- samples: 3 granules x 4 parts x band*ch (group_size per part) ---
+	for ( int igr=0; igr<3; igr++ )
+	  for ( int j=0; j<4; j++ )
+	    for ( int i=0;i<2*total;i++ ) {
+		int b = ba[i];
+		if ( !b ) continue;
+		if ( b<17 ) { for ( int g=0; g<group_size; g++ ) l2_smp( c, b ); }
+		else { int nb = ( b==17 ) ? 5 : ( b==18 ) ? 7 : 10;	// grouped: 3/5/9 levels -> 5/7/10 bits
+			l2_smp( c, nb ); }
+	    }
+	// --- trailing slack / ancillary bits (preserve verbatim) ---
+	int used = ( c.mode==0 ) ? c.br->getpos() : c.bw->getpos();
+	int anc = payload_bits - used;
+	int full = anc/8, rem = anc%8;
+	for ( int z=0; z<full; z++ ) { c.mAnc->shift_context(0); int v; if(c.mode==0){v=c.br->read(8);encode_ari(c.ar,c.mAnc,v);}else{v=decode_ari(c.ar,c.mAnc);c.bw->write(v,8);} }
+	if ( rem ) { c.mAnc->shift_context(1); int v; if(c.mode==0){v=c.br->read(rem);encode_ari(c.ar,c.mAnc,v);}else{v=decode_ari(c.ar,c.mAnc);c.bw->write(v,rem);} }
+}
+
 INTERN bool l2_compress( void )
 {
 	int fsize = str_in->getsize();
@@ -6813,26 +6939,57 @@ INTERN bool l2_compress( void )
 	int post_start = pos, post_size = fsize - post_start;
 	if ( nframes < 1 ) { snprintf( errormessage, MSG_SIZE, "no Layer I/II frames found" ); errorlevel = 2; free( d ); return false; }
 
-	// container header: magic(2) version(1) nframes(4) pre(4) post(4)
-	unsigned char hd[ 15 ];
+	// encode into memory first, so we can fall back to a verbatim "stored"
+	// container if the model expanded the data (never grow the file).
+	iostream* mem = new iostream( NULL, 1, 0, 1 );
+	aricoder* enc = new aricoder( mem, 1 );
+	model_s* mPre = INIT_MODEL_S( 256, 256, 1 ); // pre/post bytes (order-1)
+	model_s* mHdr = INIT_MODEL_S( 256, 256, 1 ); // header+crc bytes (order-1)
+	model_s* mBA  = INIT_MODEL_S(  32,  32, 1 ); // bit-alloc code (ctx=band)
+	model_s* mSC  = INIT_MODEL_S(   4,   4, 1 ); // scfcod
+	model_s* mSF  = INIT_MODEL_S(  64,  64, 1 ); // scalefactor (ctx=prev)
+	model_s* mS0  = INIT_MODEL_S( 256,  17, 1 ); // sample byte0 (ctx=nbits)
+	model_s* mS1  = INIT_MODEL_S( 256,  17, 1 ); // sample byte1
+	model_s* mAnc = INIT_MODEL_S( 256,   2, 1 ); // ancillary/slack
+	l2x c; c.mode=0; c.br=NULL; c.bw=NULL; c.ar=enc;
+	c.mHdr=mHdr; c.mBA=mBA; c.mSC=mSC; c.mSF=mSF; c.mS0=mS0; c.mS1=mS1; c.mAnc=mAnc;
+	int ctx, i, f, z;
+	// pre (ID3/garbage)
+	ctx = 0; for ( i = 0; i < pre; i++ ) { mPre->shift_context( ctx ); encode_ari( enc, mPre, d[i] ); ctx = d[i]; }
+	// per-frame: header+crc bytes, then structured payload syntax
+	int hctx = 0;
+	for ( f = 0; f < nframes; f++ ) {
+		unsigned char* hdr = d + foff[f];
+		int fb = l2_frame_bytes( hdr );
+		int crc = ( (hdr[1]&1) == 0 ) ? 2 : 0;	// protection bit 0 => CRC present
+		int fixed = 4 + crc;
+		for ( z = 0; z < fixed; z++ ) { mHdr->shift_context( hctx ); encode_ari( enc, mHdr, hdr[z] ); hctx = hdr[z]; }
+		abitreader* br = new abitreader( hdr + fixed, fb - fixed );
+		c.br = br;
+		l2_xform_frame( c, hdr, ( fb - fixed ) * 8 );
+		delete( br );
+	}
+	// post (trailing)
+	ctx = 0; for ( i = post_start; i < fsize; i++ ) { mPre->shift_context( ctx ); encode_ari( enc, mPre, d[i] ); ctx = d[i]; }
+
+	delete( enc ); delete( mPre ); delete( mHdr ); delete( mBA ); delete( mSC ); delete( mSF ); delete( mS0 ); delete( mS1 ); delete( mAnc );
+
+	// container: magic(2) ver(1) method(1) [method 0: nframes(4) pre(4) post(4) + arith] [method 1: raw file]
+	int asize = mem->getsize();
+	unsigned char* abuf = mem->getptr();
+	unsigned char hd[ 16 ];
 	hd[0] = l2_magic[0]; hd[1] = l2_magic[1]; hd[2] = appversion;
-	l2_put32( hd + 3, nframes ); l2_put32( hd + 7, pre ); l2_put32( hd + 11, post_size );
-	str_out->write( hd, 1, 15 );
-
-	aricoder* enc = new aricoder( str_out, 1 );
-	model_s* mH = INIT_MODEL_S( 256, 256, 1 ); // header bytes (order-1)
-	model_s* mD = INIT_MODEL_S( 256, 256, 1 ); // payload bytes (order-1)
-	int ctx, i, f, j;
-	// pre (ID3/garbage) -> data model
-	ctx = 0; for ( i = 0; i < pre; i++ ) { mD->shift_context( ctx ); encode_ari( enc, mD, d[i] ); ctx = d[i]; }
-	// frame headers (4 bytes each)
-	ctx = 0; for ( f = 0; f < nframes; f++ ) for ( j = 0; j < 4; j++ ) { unsigned char b = d[ foff[f]+j ]; mH->shift_context( ctx ); encode_ari( enc, mH, b ); ctx = b; }
-	// frame payloads (frame_size - 4 bytes each)
-	ctx = 0; for ( f = 0; f < nframes; f++ ) { int fb = l2_frame_bytes( d + foff[f] ); for ( j = 4; j < fb; j++ ) { unsigned char b = d[ foff[f]+j ]; mD->shift_context( ctx ); encode_ari( enc, mD, b ); ctx = b; } }
-	// trailing data
-	ctx = 0; for ( i = post_start; i < fsize; i++ ) { mD->shift_context( ctx ); encode_ari( enc, mD, d[i] ); ctx = d[i]; }
-
-	delete( enc ); delete( mH ); delete( mD );
+	if ( 16 + asize < fsize ) {		// model wins
+		hd[3] = 0;
+		l2_put32( hd + 4, nframes ); l2_put32( hd + 8, pre ); l2_put32( hd + 12, post_size );
+		str_out->write( hd, 1, 16 );
+		str_out->write( abuf, 1, asize );
+	} else {						// stored fallback (never expand)
+		hd[3] = 1;
+		str_out->write( hd, 1, 4 );
+		str_out->write( d, 1, fsize );
+	}
+	delete( mem );
 	mp3filesize = fsize;
 	pmpfilesize = str_out->getsize();
 	free( d );
@@ -6841,40 +6998,64 @@ INTERN bool l2_compress( void )
 
 INTERN bool l2_decompress( void )
 {
-	unsigned char hd[ 15 ];
+	unsigned char hd[ 16 ];
 	str_in->rewind();
-	if ( str_in->read( hd, 1, 15 ) != 15 ) { snprintf( errormessage, MSG_SIZE, "truncated archive" ); errorlevel = 2; return false; }
+	if ( str_in->read( hd, 1, 4 ) != 4 ) { snprintf( errormessage, MSG_SIZE, "truncated archive" ); errorlevel = 2; return false; }
 	if ( hd[0] != (unsigned char) l2_magic[0] || hd[1] != (unsigned char) l2_magic[1] ) { snprintf( errormessage, MSG_SIZE, "not a Layer I/II archive" ); errorlevel = 2; return false; }
-	int nframes = l2_get32( hd + 3 ), pre = l2_get32( hd + 7 ), post_size = l2_get32( hd + 11 );
+
+	// stored fallback: rest of the archive is the verbatim file
+	if ( hd[3] == 1 ) {
+		int rest = str_in->getsize() - 4;
+		unsigned char* raw = (unsigned char*) calloc( ( rest > 0 ? rest : 1 ), 1 );
+		str_in->read( raw, 1, rest );
+		str_out->write( raw, 1, rest );
+		free( raw );
+		pmpfilesize = str_in->getsize();
+		mp3filesize = str_out->getsize();
+		return true;
+	}
+	if ( str_in->read( hd + 4, 1, 12 ) != 12 ) { snprintf( errormessage, MSG_SIZE, "truncated archive" ); errorlevel = 2; return false; }
+	int nframes = l2_get32( hd + 4 ), pre = l2_get32( hd + 8 ), post_size = l2_get32( hd + 12 );
 
 	aricoder* dec = new aricoder( str_in, 0 );
-	model_s* mH = INIT_MODEL_S( 256, 256, 1 );
-	model_s* mD = INIT_MODEL_S( 256, 256, 1 );
-	int ctx, i, f, k;
-	unsigned char b;
+	model_s* mPre = INIT_MODEL_S( 256, 256, 1 );
+	model_s* mHdr = INIT_MODEL_S( 256, 256, 1 );
+	model_s* mBA  = INIT_MODEL_S(  32,  32, 1 );
+	model_s* mSC  = INIT_MODEL_S(   4,   4, 1 );
+	model_s* mSF  = INIT_MODEL_S(  64,  64, 1 );
+	model_s* mS0  = INIT_MODEL_S( 256,  17, 1 );
+	model_s* mS1  = INIT_MODEL_S( 256,  17, 1 );
+	model_s* mAnc = INIT_MODEL_S( 256,   2, 1 );
+	l2x c; c.mode=1; c.br=NULL; c.bw=NULL; c.ar=dec;
+	c.mHdr=mHdr; c.mBA=mBA; c.mSC=mSC; c.mSF=mSF; c.mS0=mS0; c.mS1=mS1; c.mAnc=mAnc;
+	int ctx, i, f, z; unsigned char b;
 
 	// pre
-	ctx = 0; for ( i = 0; i < pre; i++ ) { mD->shift_context( ctx ); b = (unsigned char) decode_ari( dec, mD ); str_out->write( &b, 1, 1 ); ctx = b; }
-	// headers first (need them to know payload sizes)
-	unsigned char* hbuf = (unsigned char*) calloc( ( nframes > 0 ? nframes : 1 ) * 4, 1 );
-	ctx = 0; for ( k = 0; k < nframes * 4; k++ ) { mH->shift_context( ctx ); hbuf[k] = (unsigned char) decode_ari( dec, mH ); ctx = hbuf[k]; }
-	// payload total
-	long tot = 0;
-	for ( f = 0; f < nframes; f++ ) { int fb = l2_frame_bytes( hbuf + f*4 ); tot += ( fb > 4 ) ? fb - 4 : 0; }
-	unsigned char* pbuf = (unsigned char*) calloc( ( tot > 0 ? tot : 1 ), 1 );
-	ctx = 0; for ( k = 0; k < tot; k++ ) { mD->shift_context( ctx ); pbuf[k] = (unsigned char) decode_ari( dec, mD ); ctx = pbuf[k]; }
-	// interleave header + payload per frame
-	long dp = 0;
+	ctx = 0; for ( i = 0; i < pre; i++ ) { mPre->shift_context( ctx ); b = (unsigned char) decode_ari( dec, mPre ); str_out->write( &b, 1, 1 ); ctx = b; }
+	// per-frame
+	int hctx = 0;
 	for ( f = 0; f < nframes; f++ ) {
-		int fb = l2_frame_bytes( hbuf + f*4 );
-		str_out->write( hbuf + f*4, 1, 4 );
-		if ( fb > 4 ) { str_out->write( pbuf + dp, 1, fb - 4 ); dp += fb - 4; }
+		unsigned char hdr[ 4 ];
+		for ( z = 0; z < 4; z++ ) { mHdr->shift_context( hctx ); hdr[z] = (unsigned char) decode_ari( dec, mHdr ); hctx = hdr[z]; }
+		int fb = l2_frame_bytes( hdr );
+		int crc = ( (hdr[1]&1) == 0 ) ? 2 : 0;
+		int fixed = 4 + crc;
+		unsigned char crcb[ 2 ] = {0,0};
+		for ( z = 0; z < crc; z++ ) { mHdr->shift_context( hctx ); crcb[z] = (unsigned char) decode_ari( dec, mHdr ); hctx = crcb[z]; }
+		if ( fb <= fixed ) { snprintf( errormessage, MSG_SIZE, "corrupt L2 frame %i", f ); errorlevel = 2; break; }
+		abitwriter* bw = new abitwriter( fb );
+		c.bw = bw;
+		l2_xform_frame( c, hdr, ( fb - fixed ) * 8 );
+		unsigned char* pay = bw->getptr();
+		str_out->write( hdr, 1, 4 );
+		if ( crc ) str_out->write( crcb, 1, crc );
+		str_out->write( pay, 1, fb - fixed );
+		delete( bw ); free( pay );
 	}
-	// trailing data
-	ctx = 0; for ( i = 0; i < post_size; i++ ) { mD->shift_context( ctx ); b = (unsigned char) decode_ari( dec, mD ); str_out->write( &b, 1, 1 ); ctx = b; }
+	// post
+	ctx = 0; for ( i = 0; i < post_size; i++ ) { mPre->shift_context( ctx ); b = (unsigned char) decode_ari( dec, mPre ); str_out->write( &b, 1, 1 ); ctx = b; }
 
-	delete( dec ); delete( mH ); delete( mD );
-	free( hbuf ); free( pbuf );
+	delete( dec ); delete( mPre ); delete( mHdr ); delete( mBA ); delete( mSC ); delete( mSF ); delete( mS0 ); delete( mS1 ); delete( mAnc );
 	pmpfilesize = str_in->getsize();
 	mp3filesize = str_out->getsize();
 	return true;
