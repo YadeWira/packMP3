@@ -6974,22 +6974,39 @@ INTERN bool l2_compress( void )
 
 	delete( enc ); delete( mPre ); delete( mHdr ); delete( mBA ); delete( mSC ); delete( mSF ); delete( mS0 ); delete( mS1 ); delete( mAnc );
 
-	// container: magic(2) ver(1) method(1) [method 0: nframes(4) pre(4) post(4) + arith] [method 1: raw file]
+	// build the method-0 (modelled) container in memory
 	int asize = mem->getsize();
-	unsigned char* abuf = mem->getptr();
-	unsigned char hd[ 16 ];
-	hd[0] = l2_magic[0]; hd[1] = l2_magic[1]; hd[2] = appversion;
-	if ( 16 + asize < fsize ) {		// model wins
-		hd[3] = 0;
-		l2_put32( hd + 4, nframes ); l2_put32( hd + 8, pre ); l2_put32( hd + 12, post_size );
-		str_out->write( hd, 1, 16 );
-		str_out->write( abuf, 1, asize );
-	} else {						// stored fallback (never expand)
-		hd[3] = 1;
+	int archlen = 16 + asize;
+	unsigned char* arch = (unsigned char*) malloc( archlen );
+	arch[0] = l2_magic[0]; arch[1] = l2_magic[1]; arch[2] = appversion; arch[3] = 0;
+	l2_put32( arch+4, nframes ); l2_put32( arch+8, pre ); l2_put32( arch+12, post_size );
+	memcpy( arch + 16, mem->getptr(), asize );
+	delete( mem );
+
+	// self-verify: a lossless tool must never emit a non-reconstructing archive.
+	// Decode the modelled container in memory and require an exact match + a real
+	// size win; otherwise fall back to a verbatim "stored" container.
+	bool ok = ( archlen < fsize );
+	if ( ok ) {
+		int save_err = errorlevel; char save_msg[ MSG_SIZE ]; memcpy( save_msg, errormessage, MSG_SIZE );
+		iostream* si = str_in; iostream* so = str_out;
+		str_in  = new iostream( arch, 1, archlen, 0 );
+		str_out = new iostream( NULL, 1, 0, 1 );
+		ok = l2_decompress();
+		if ( ok ) ok = ( str_out->getsize() == fsize ) && ( memcmp( str_out->getptr(), d, fsize ) == 0 );
+		delete( str_in ); delete( str_out );
+		str_in = si; str_out = so;
+		errorlevel = save_err; memcpy( errormessage, save_msg, MSG_SIZE );	// roll back verify side effects
+	}
+
+	if ( ok ) {							// modelled container verified smaller
+		str_out->write( arch, 1, archlen );
+	} else {							// stored fallback (never expand, always lossless)
+		unsigned char hd[ 4 ] = { (unsigned char) l2_magic[0], (unsigned char) l2_magic[1], (unsigned char) appversion, 1 };
 		str_out->write( hd, 1, 4 );
 		str_out->write( d, 1, fsize );
 	}
-	delete( mem );
+	free( arch );
 	mp3filesize = fsize;
 	pmpfilesize = str_out->getsize();
 	free( d );
