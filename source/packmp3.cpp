@@ -1806,7 +1806,14 @@ INTERN bool check_file( void )
 				int br = ( pk[p+2] >> 4 ) & 0xF, sr = ( pk[p+2] >> 2 ) & 0x3;
 				if ( lb == 0 || ver == 1 || br == 0 || br == 15 || sr == 3 ) continue; // invalid hdr
 				int layer = 4 - lb;	// 1=I, 2=II, 3=III
-				if ( layer == 1 || layer == 2 ) filetype = F_MP2;
+				// Layer I/II (mp1/mp2) compression disabled for now — focus on
+				// Layer III (mp3) only. The l2_* codec is kept but not routed to.
+				if ( layer == 1 || layer == 2 ) {
+					filetype = F_UNK;
+					snprintf( errormessage, MSG_SIZE, "Layer I/II (mp1/mp2) not supported - Layer III (mp3) only" );
+					errorlevel = 1;
+					return false;
+				}
 				break;
 			}
 		}
