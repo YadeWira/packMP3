@@ -52,8 +52,8 @@ extern "C" { int _dowildcard = -1; }
 // files concurrently without data races. Config/shared state stays plain static.
 #define THREAD_LOCAL static thread_local
 
-#define INIT_MODEL_S(a,b,c) new model_s( a, b, c, 511 )
-#define INIT_MODEL_B(a,b)   new model_b( a, b, 511 )
+#define INIT_MODEL_S(a,b,c) new model_s( a, b, c, 8191 )
+#define INIT_MODEL_B(a,b)   new model_b( a, b, 8191 )
 
 #define ABS(v1)			( (v1 < 0) ? -v1 : v1 )
 #define ABSDIFF(v1,v2)	( (v1 > v2) ? (v1 - v2) : (v2 - v1) )
@@ -370,8 +370,8 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 	global variables: info about program
 	----------------------------------------------- */
 
-INTERN const unsigned char appversion = 13;
-INTERN const unsigned char appversion_legacy_min = 11; // v1.3 decodes v1.1/v1.2 archives too
+INTERN const unsigned char appversion = 20;
+INTERN const unsigned char appversion_legacy_min = 20; // v2.0 changed the entropy models; no backward-compatible payload
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
@@ -5525,7 +5525,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 					shift_model( mod_asc, ctx_pat, ctx_h_abs[p] );
 					encode_ari( enc, mod_asc, abs[p] ); // absolutes
 					ctx_pat = ( (ctx_pat<<1) | abs[p] ) & 0xF;
-					ctx_abs = ( 2 * abs[p] + ctx_abs + 2 ) / 3;
+					ctx_abs = ( abs[p] + 3 * ctx_abs + 2 ) / 4;
 					if ( abs[p] == 1 ) {
 						shift_model( mod_sgc, ctx_h_abs[p], ctx_h_sgn[p] );
 						encode_ari( enc, mod_sgc, sgn[p] ); // signs
@@ -5551,7 +5551,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 					for ( ; p >= rlb; p-- ) {
 						shift_model( mod_abc, ctx_abs, ctx_h_abs[p] );
 						encode_ari( enc, mod_abc, abs[p] ); // absolutes
-						ctx_abs = ( 2 * abs[p] + ctx_abs + 2 ) / 3;
+						ctx_abs = ( abs[p] + 3 * ctx_abs + 2 ) / 4;
 						if ( abs[p] > 0 ) {
 							shift_model( mod_sgc, ctx_h_abs[p], ctx_h_sgn[p] );
 							encode_ari( enc, mod_sgc, sgn[p] ); // signs
@@ -6139,7 +6139,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 					shift_model( mod_asc, ctx_pat, ctx_h_abs[p] );
 					abs[p] = decode_ari( dec, mod_asc ); // absolutes
 					ctx_pat = ( (ctx_pat<<1) | abs[p] ) & 0xF;
-					ctx_abs = ( 2 * abs[p] + ctx_abs + 2 ) / 3;
+					ctx_abs = ( abs[p] + 3 * ctx_abs + 2 ) / 4;
 					if ( abs[p] == 1 ) {
 						shift_model( mod_sgc, ctx_h_abs[p], ctx_h_sgn[p] );
 						sgn[p] = decode_ari( dec, mod_sgc ); // signs
@@ -6165,7 +6165,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 					for ( ; p >= rlb; p-- ) {
 						shift_model( mod_abc, ctx_abs, ctx_h_abs[p] );
 						abs[p] = decode_ari( dec, mod_abc ); // absolutes
-						ctx_abs = ( 2 * abs[p] + ctx_abs + 2 ) / 3;
+						ctx_abs = ( abs[p] + 3 * ctx_abs + 2 ) / 4;
 						if ( abs[p] > 0 ) {
 							shift_model( mod_sgc, ctx_h_abs[p], ctx_h_sgn[p] );
 							sgn[p] = decode_ari( dec, mod_sgc ); // signs
