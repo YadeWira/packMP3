@@ -383,7 +383,7 @@ INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";
 INTERN const char*	copyright    = "2010-2026 Yade Bravo & Matthias Stirner";
-INTERN const char*  pmp_ext      = "pmp";
+INTERN const char*  pmp_ext      = "pm3";
 INTERN const char*  mp3_ext      = "mp3";
 #endif
 INTERN const char   pmp_magic[] = { 'M', 'S' };
@@ -892,7 +892,7 @@ static bool is_mp3_or_pmp( const std::filesystem::path& p )
 {
 	std::string ext = p.extension().string();
 	for ( auto& ch : ext ) ch = (char)tolower( (unsigned char)ch );
-	return ext == ".mp3" || ext == ".pmp";
+	return ext == ".mp3" || ext == ".pm3" || ext == ".pmp";
 }
 
 static void collect_files_recursive( const std::filesystem::path& dir,

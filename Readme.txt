@@ -55,9 +55,9 @@ to be used as a preprocessor.
 
 Usage examples:
 
- "packMP3 *.pmp"
+ "packMP3 *.pm3"
  "packMP3 luca.mp3"
- "packMP3 song??.pmp"
+ "packMP3 song??.pm3"
  "packMP3 - < sail.pjg > sail.jpg"
 
 
@@ -92,7 +92,7 @@ although nothing actually went wrong.
 
 Usage examples:
 
- "packMP3 -v1 -o luca.pmp"
+ "packMP3 -v1 -o luca.pm3"
  "packMP3 -ver luca.mp3"
  "packMP3 -p *.mp3"
 
