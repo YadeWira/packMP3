@@ -1464,6 +1464,7 @@ INTERN void show_help( void )
 	fprintf( msgout, " [--no-color] disable ANSI color output (also respected via NO_COLOR env var)\n" );
 	fprintf( msgout, " [-o]     overwrite existing files\n" );
 	fprintf( msgout, " [-th<N>] use N threads for batch processing (0=auto; forces verify)\n" );
+	fprintf( msgout, " [-k<N>]  intra-file parallel chunks (default 2; 1=max ratio; 0=auto)\n" );
 	fprintf( msgout, " [-r]     recurse into subdirectories\n" );
 	fprintf( msgout, " [-fs]    preserve source folder structure under -od (use with -r)\n" );
 	fprintf( msgout, " [-dry]   dry run: simulate without writing output files\n" );
