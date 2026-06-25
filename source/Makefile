@@ -9,9 +9,9 @@ CXX     ?= g++
 RC       = windres -O coff
 
 # Base flags
-CXXFLAGS  = -I. -std=c++17 -O3 -Wall -Wextra -pedantic \
+CXXFLAGS  = -I. -std=c++17 -O3 -flto=auto -Wall -Wextra -pedantic \
              -funroll-loops -ffast-math -fomit-frame-pointer
-LDFLAGS   =
+LDFLAGS   = -flto=auto
 
 CSRC     = $(wildcard *.c)
 CXXSRC   = $(wildcard *.cpp)
@@ -23,8 +23,8 @@ WIN64       = x86_64-w64-mingw32-g++
 WIN32       = i686-w64-mingw32-g++
 WINDRES64   = x86_64-w64-mingw32-windres
 WINDRES32   = i686-w64-mingw32-windres
-CROSS_FLAGS = -I. -std=c++17 -O3 -Wall -funroll-loops -ffast-math -fomit-frame-pointer -pthread
-CROSS_LD    = -static -static-libgcc -static-libstdc++ -pthread
+CROSS_FLAGS = -I. -std=c++17 -O3 -flto=auto -Wall -funroll-loops -ffast-math -fomit-frame-pointer -pthread
+CROSS_LD    = -flto=auto -static -static-libgcc -static-libstdc++ -pthread
 
 # ---- Platform detection ----
 ifeq ($(OS),Windows_NT)
