@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include "bitops.h"
 #include "aricoder.h"
 
@@ -347,9 +348,8 @@ void model_s::update_model( int symbol )
 	table_s* context;
 	unsigned short* counts;
 	int local_order;
-	int i;
-	
-	
+
+
 	// only contexts, that were actually used to encode
 	// the symbol get their counts updated
 	if ( symbol >= 0 ) {
@@ -371,8 +371,7 @@ void model_s::update_model( int symbol )
 	
 	// reset scoreboard and current order
 	current_order = max_order;
-	for ( i = 0; i < max_symbol; i++ )
-		scoreboard[ i ] = 0;
+	memset( scoreboard, 0, max_symbol * sizeof( *scoreboard ) );
 	sb0_count = max_symbol;
 }
 
@@ -595,22 +594,37 @@ void model_s::totalize_table( table_s *context )
 		// (re)set current total
 		curr_total = 0;
 		
-		// go reverse though the whole counts table and accumulate counts
-		// leave space at the beginning of the table for the escape symbol
-		for ( ; i >= 0; i-- ) {			
-			// only count probability if the current symbol is not 'scoreboard - excluded'
-			if ( scoreboard[ i ] == 0 ) {
+		// go reverse though the whole counts table and accumulate counts,
+		// leaving space at the beginning of the table for the escape symbol.
+		// Fast path: when nothing is excluded yet (the common case right after
+		// update_model), the per-symbol scoreboard test is always true, so skip
+		// it. Produces identical totals — purely fewer instructions.
+		if ( local_symb == max_symbol ) {
+			for ( ; i >= 0; i-- ) {
 				curr_count = counts[ i ];
 				if ( curr_count > 0 ) {
-					// add counts for the current symbol
 					curr_total = curr_total + curr_count;
-					// exclude symbol from scoreboard
 					scoreboard[ i ] = 1;
 					sb0_count--;
 				}
+				totals[ i + 1 ] = curr_total;
 			}
-			totals[ i + 1 ] = curr_total;
-		}		
+		} else {
+			for ( ; i >= 0; i-- ) {
+				// only count probability if the current symbol is not 'scoreboard - excluded'
+				if ( scoreboard[ i ] == 0 ) {
+					curr_count = counts[ i ];
+					if ( curr_count > 0 ) {
+						// add counts for the current symbol
+						curr_total = curr_total + curr_count;
+						// exclude symbol from scoreboard
+						scoreboard[ i ] = 1;
+						sb0_count--;
+					}
+				}
+				totals[ i + 1 ] = curr_total;
+			}
+		}
 		// here the escape calculation needs to take place
 		if ( local_symb == sb0_count )
 			esc_prob = 1;
