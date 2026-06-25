@@ -5782,7 +5782,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 					shift_model( mod_asc, ctx_pat, ctx_h_abs[p] );
 					encode_ari( enc, mod_asc, abs[p] ); // absolutes
 					ctx_pat = ( (ctx_pat<<1) | abs[p] ) & 0xF;
-					ctx_abs = ( abs[p] + 3 * ctx_abs + 2 ) / 4;
+					ctx_abs = ( 2 * abs[p] + 5 * ctx_abs + 3 ) / 7;
 					if ( abs[p] == 1 ) {
 						shift_model( mod_sgc, ctx_h_abs[p], ctx_h_sgn[p] );
 						encode_ari( enc, mod_sgc, sgn[p] ); // signs
@@ -5808,7 +5808,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 					for ( ; p >= rlb; p-- ) {
 						shift_model( mod_abc, ctx_abs, ctx_h_abs[p] );
 						encode_ari( enc, mod_abc, abs[p] ); // absolutes
-						ctx_abs = ( abs[p] + 3 * ctx_abs + 2 ) / 4;
+						ctx_abs = ( 2 * abs[p] + 5 * ctx_abs + 3 ) / 7;
 						if ( abs[p] > 0 ) {
 							shift_model( mod_sgc, ctx_h_abs[p], ctx_h_sgn[p] );
 							encode_ari( enc, mod_sgc, sgn[p] ); // signs
@@ -5832,7 +5832,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 				if ( !j_coding || ( ch == 0 ) ) { // !!!
 					// channel 0 context
 					for ( i = 578-1; i >= 0; i-- ) {
-						ctx_h_abs[i] = ( 3 * abs[i] + abs[i-1] + abs[i+1] + 2 * ctx_h_abs[i] + 4 ) / 7;
+						ctx_h_abs[i] = ( 2 * abs[i] + abs[i-1] + abs[i+1] + 3 * ctx_h_abs[i] + 3 ) / 7;
 						if ( abs[i] > 0 ) {
 							ctx_h_sgn[i] = ( ( ctx_h_sgn[i] << 1 ) | ( sgn[i] & 0x1 ) ) & 0xF;
 							if ( abs[i] == 15 ) ctx_h_len[i] = ( 2 * len[i] + ctx_h_len[i] + 2 ) / 3;
@@ -6396,7 +6396,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 					shift_model( mod_asc, ctx_pat, ctx_h_abs[p] );
 					abs[p] = decode_ari( dec, mod_asc ); // absolutes
 					ctx_pat = ( (ctx_pat<<1) | abs[p] ) & 0xF;
-					ctx_abs = ( abs[p] + 3 * ctx_abs + 2 ) / 4;
+					ctx_abs = ( 2 * abs[p] + 5 * ctx_abs + 3 ) / 7;
 					if ( abs[p] == 1 ) {
 						shift_model( mod_sgc, ctx_h_abs[p], ctx_h_sgn[p] );
 						sgn[p] = decode_ari( dec, mod_sgc ); // signs
@@ -6422,7 +6422,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 					for ( ; p >= rlb; p-- ) {
 						shift_model( mod_abc, ctx_abs, ctx_h_abs[p] );
 						abs[p] = decode_ari( dec, mod_abc ); // absolutes
-						ctx_abs = ( abs[p] + 3 * ctx_abs + 2 ) / 4;
+						ctx_abs = ( 2 * abs[p] + 5 * ctx_abs + 3 ) / 7;
 						if ( abs[p] > 0 ) {
 							shift_model( mod_sgc, ctx_h_abs[p], ctx_h_sgn[p] );
 							sgn[p] = decode_ari( dec, mod_sgc ); // signs
@@ -6478,7 +6478,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 				if ( !j_coding || ( ch == 0 ) ) {
 					// channel 0 context
 					for ( i = 578-1; i >= 0; i-- ) {
-						ctx_h_abs[i] = ( 3 * abs[i] + abs[i-1] + abs[i+1] + 2 * ctx_h_abs[i] + 4 ) / 7;
+						ctx_h_abs[i] = ( 2 * abs[i] + abs[i-1] + abs[i+1] + 3 * ctx_h_abs[i] + 3 ) / 7;
 						if ( abs[i] > 0 ) {
 							ctx_h_sgn[i] = ( ( ctx_h_sgn[i] << 1 ) | ( sgn[i] & 0x1 ) ) & 0xF;
 							if ( abs[i] == 15 ) ctx_h_len[i] = ( 2 * len[i] + ctx_h_len[i] + 2 ) / 3;

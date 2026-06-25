@@ -30,10 +30,10 @@ sr=0; se=0; sd=0; n=0; allok=1
 for src in "$CORPUS"/*.mp3; do
   [ -f "$src" ] || continue
   bn=$(basename "$src" .mp3); o=$(stat -c%s "$src")
-  cp -f "$src" "$W/in.mp3"; rm -f "$W/in.pmp" "$W/d/in.mp3"; mkdir -p "$W/d"
+  cp -f "$src" "$W/in.mp3"; rm -f "$W/in.pm3" "$W/d/in.mp3"; mkdir -p "$W/d"
   et=$(tms "$BIN a -np -o -od$W $W/in.mp3")
-  c=0; [ -f "$W/in.pmp" ] && c=$(stat -c%s "$W/in.pmp")
-  dt=$(tms "$BIN x -np -o -od$W/d $W/in.pmp")
+  c=0; [ -f "$W/in.pm3" ] && c=$(stat -c%s "$W/in.pm3")
+  dt=$(tms "$BIN x -np -o -od$W/d $W/in.pm3")
   # lossless: -ver compresses+decodes+compares; ok => errorlevel 0
   if $BIN a -np -o -ver -od$W/v "$W/in.mp3" >/dev/null 2>&1; then lossok="OK"; else lossok="FAIL"; allok=0; fi
   if [ "$c" -gt 0 ]; then pct=$(awk "BEGIN{printf \"%.1f\",100*$c/$o}"); else pct="FAIL"; allok=0; fi
