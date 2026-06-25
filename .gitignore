@@ -35,3 +35,6 @@
 
 # AI/VM connection guides (contain credentials) — never commit
 CONEXION-IA*.md
+
+# generated benchmark corpus
+/corpus/

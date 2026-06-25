@@ -1,0 +1,16 @@
+== packMP3 bench [baseline] ==
+file                           bytes |  ratio |   enc |   dec | lossless
+------------------------------------------------------------------------
+gen_cbr128_mono               401239 |  88.9% |  190ms |  208ms | OK
+gen_cbr128_stereo             401239 |  89.7% |  236ms |  250ms | OK
+gen_cbr160_jstereo            501551 |  90.1% |  249ms |  255ms | OK
+gen_cbr320_stereo            1003101 |  81.8% |  420ms |  417ms | OK
+gen_mpeg2_16k_48              150768 |  91.0% |   92ms |  113ms | OK
+gen_mpeg2_22k_64              200828 |  90.9% |  114ms |  147ms | OK
+gen_vbr_v0                    737977 |  86.6% |  356ms |  353ms | OK
+gen_vbr_v2                    545993 |  90.0% |  293ms |  281ms | OK
+real_128_stereo               566002 |  87.1% |  305ms |  296ms | OK
+real_192_jstereo              896228 |  90.5% |  428ms |  417ms | OK
+real_224_32khz                764176 |  88.1% |  328ms |  347ms | OK
+------------------------------------------------------------------------
+PROMEDIO (11)                        |  88.6% |  274ms |  280ms | ALL-OK
