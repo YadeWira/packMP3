@@ -102,6 +102,8 @@ INTERN bool write_mp3( void );
 INTERN bool analyze_frames( void );
 INTERN bool compress_mp3( void );
 INTERN bool uncompress_pmp( void );
+INTERN bool compress_mp3_chunked( void );	// split into K independent sub-streams, compress (parallel)
+INTERN bool uncompress_pmp_chunked( void );	// decode an "MK" container, concatenate chunk output
 
 
 /* -----------------------------------------------
@@ -358,6 +360,7 @@ INTERN char** filelist_srcroot = NULL;	// [i] = src dir arg that yielded filelis
 INTERN int  action         = A_COMPRESS;// what to do with MP3/PMP files
 INTERN FILE*  msgout   = stdout;	// stream for output of messages
 INTERN int    num_threads = 1;		// -th<N>: worker threads for batch (1 = single-threaded)
+INTERN int    num_chunks  = 2;		// -k<N>: intra-file parallel chunks (1 = single serial stream)
 THREAD_LOCAL bool pipe_on  = false;	// use stdin/stdout instead of filelist (per-thread)
 #else
 INTERN int  err_tol    = 1;			// error threshold ( proceed on warnings yes (2) / no (1) )
@@ -385,6 +388,10 @@ INTERN const char*  mp3_ext      = "mp3";
 #endif
 INTERN const char   pmp_magic[] = { 'M', 'S' };
 INTERN const char   l2_magic[]  = { 'M', '2' };	// separate container for Layer I/II archives
+INTERN const char   pmc_magic[] = { 'M', 'K' };	// chunked container: K independent "MS" sub-streams
+#define MAX_CHUNKS       64				// upper bound on -k
+#define MIN_FRAMES_CHUNK 16				// don't split below this many frames per chunk
+THREAD_LOCAL bool arch_chunked = false;	// set by check_file when input archive is an "MK" container
 
 
 // ─── v1.2 Color support ──────────────────────────────────────────────────────
@@ -1024,6 +1031,15 @@ INTERN void initialize_options( int argc, char** argv )
 				            : ( ( tmp_val < 1 ) ? 1 : tmp_val );
 			}
 		}
+		else if ( strncmp((*argv), "-k", 2 ) == 0 && ( (*argv)[2] == '\0' || ( (*argv)[2] >= '0' && (*argv)[2] <= '9' ) ) ) {
+			// -k<N> intra-file chunks; -k alone => auto (hardware concurrency, capped)
+			int cores = (int) std::thread::hardware_concurrency();
+			if ( (*argv)[2] == '\0' ) {
+				num_chunks = ( cores > 1 ) ? ( ( cores < MAX_CHUNKS ) ? cores : MAX_CHUNKS ) : 1;
+			} else if ( sscanf( (*argv) + 2, "%i", &tmp_val ) == 1 ) {
+				num_chunks = ( tmp_val < 1 ) ? 1 : ( ( tmp_val > MAX_CHUNKS ) ? MAX_CHUNKS : tmp_val );
+			}
+		}
 		#if defined(DEV_BUILD)
 		else if ( strcmp((*argv), "-dev") == 0 ) {
 			developer = true;
@@ -1347,6 +1363,10 @@ INTERN inline const char* get_status( bool (*function)() )
 		return "Compressing to PMP";
 	} else if ( function == *uncompress_pmp ) {
 		return "Uncompressing PMP";
+	} else if ( function == *compress_mp3_chunked ) {
+		return "Compressing to PMP (chunked)";
+	} else if ( function == *uncompress_pmp_chunked ) {
+		return "Uncompressing PMP (chunked)";
 	} else if ( function == *swap_streams ) {
 		return "Swapping input/output streams";
 	} else if ( function == *compare_output ) {
@@ -1479,18 +1499,23 @@ INTERN void process_file( void )
 	if ( filetype == F_MP3 ) {
 		switch ( action ) {
 			case A_COMPRESS:
-				execute( read_mp3 );
-				execute( analyze_frames );
-				execute( compress_mp3 );
-				#if !defined(BUILD_LIB)	
-				if ( verify_lv > 0 ) { // verifcation
-					execute( reset_buffers );
-					execute( swap_streams );
-					execute( uncompress_pmp );
-					execute( write_mp3 );
-					execute( compare_output );
+				if ( num_chunks > 1 ) {
+					// intra-file parallel chunking; self-verifies internally when verify_lv>0
+					execute( compress_mp3_chunked );
+				} else {
+					execute( read_mp3 );
+					execute( analyze_frames );
+					execute( compress_mp3 );
+					#if !defined(BUILD_LIB)
+					if ( verify_lv > 0 ) { // verifcation
+						execute( reset_buffers );
+						execute( swap_streams );
+						execute( uncompress_pmp );
+						execute( write_mp3 );
+						execute( compare_output );
+					}
+					#endif
 				}
-				#endif
 				break;
 				
 			#if !defined(BUILD_LIB)
@@ -1565,18 +1590,23 @@ INTERN void process_file( void )
 		switch ( action )
 		{
 			case A_COMPRESS:
-				execute( uncompress_pmp );
-				execute( write_mp3 );
-				#if !defined(BUILD_LIB)
-				if ( verify_lv > 0 ) { // verify
-					execute( reset_buffers );
-					execute( swap_streams );
-					execute( read_mp3 );
-					execute( analyze_frames );
-					execute( compress_mp3 );
-					execute( compare_output );
+				if ( arch_chunked ) {
+					// "MK" container: decode all chunks, write concatenated mp3 directly
+					execute( uncompress_pmp_chunked );
+				} else {
+					execute( uncompress_pmp );
+					execute( write_mp3 );
+					#if !defined(BUILD_LIB)
+					if ( verify_lv > 0 ) { // verify
+						execute( reset_buffers );
+						execute( swap_streams );
+						execute( read_mp3 );
+						execute( analyze_frames );
+						execute( compress_mp3 );
+						execute( compare_output );
+					}
+					#endif
 				}
-				#endif
 				break;
 
 			#if !defined(BUILD_LIB)
@@ -1760,8 +1790,10 @@ INTERN bool check_file( void )
 	}
 	
 	// check file id, determine filetype
-	bool is_pmp = ( fileid[0] == pmp_magic[0] ) && ( fileid[1] == pmp_magic[1] );
+	bool is_chunked = ( fileid[0] == pmc_magic[0] ) && ( fileid[1] == pmc_magic[1] );
+	bool is_pmp = ( ( fileid[0] == pmp_magic[0] ) && ( fileid[1] == pmp_magic[1] ) ) || is_chunked;
 	bool is_pl2 = ( fileid[0] == (unsigned char) l2_magic[0] ) && ( fileid[1] == (unsigned char) l2_magic[1] );
+	arch_chunked = is_chunked;	// "MK" container -> decode via uncompress_pmp_chunked
 	if ( is_pmp || is_pl2 ) {
 		// PMP/M2 marker -> compressed archive (Layer III / Layer I-II)
 		filetype = is_pl2 ? F_PL2 : F_PMP;
@@ -2653,8 +2685,232 @@ INTERN bool uncompress_pmp( void )
 	
 	// get filesize
 	pmpfilesize = str_in->getsize();
-	
-	
+
+
+	return true;
+}
+
+
+/* -----------------------------------------------
+	intra-file parallel chunking (-k): a file is split at frame boundaries into
+	K byte ranges, each compressed/decompressed independently (its own arithmetic
+	stream + fresh models), so they can run on separate threads. The "MK" container
+	holds K self-contained "MS" sub-streams. K=1 keeps the original single stream.
+	Cost: each chunk restarts the models (a small ratio hit at the boundary); the
+	chunks tile the file exactly, so concatenation is bit-identical to the input.
+	----------------------------------------------- */
+
+INTERN bool compress_mp3_chunked( void )
+{
+	iostream* real_in  = str_in;
+	iostream* real_out = str_out;
+
+	int fsize = real_in->getsize();
+	if ( fsize <= 0 ) { snprintf( errormessage, MSG_SIZE, "empty input" ); errorlevel = 2; return false; }
+	unsigned char* d = (unsigned char*) malloc( fsize );
+	if ( d == NULL ) { snprintf( errormessage, MSG_SIZE, MEM_ERRMSG ); errorlevel = 2; return false; }
+	real_in->rewind();
+	real_in->read( d, 1, fsize );
+
+	// --- find frame-aligned cut points: cuts[0]=0 .. cuts[nch]=fsize ---
+	int K = num_chunks; if ( K > MAX_CHUNKS ) K = MAX_CHUNKS;
+	int cuts[ MAX_CHUNKS + 1 ]; int nch = 0;
+	{
+		int first = mp3_seek_firstframe( d, fsize );
+		if ( first >= 0 ) {
+			int save_err = errorlevel; char save_msg[ MSG_SIZE ]; memcpy( save_msg, errormessage, MSG_SIZE );
+			std::vector<int> starts;
+			int pos = first;
+			while ( pos + 4 <= fsize ) {
+				mp3Frame* f = mp3_read_frame( d + pos, fsize - pos );
+				if ( f == NULL ) break;
+				int fb = f->frame_size;
+				mp3_discard_frame( f );
+				if ( fb <= 0 || pos + fb > fsize ) break;
+				starts.push_back( pos );
+				pos += fb;
+			}
+			errorlevel = save_err; memcpy( errormessage, save_msg, MSG_SIZE );	// scan is side-effect free
+			int nf = (int) starts.size();
+			if ( nf >= 2 * MIN_FRAMES_CHUNK ) {
+				if ( K > nf / MIN_FRAMES_CHUNK ) K = nf / MIN_FRAMES_CHUNK;
+				if ( K > 1 ) {
+					cuts[0] = 0;										// leading junk -> chunk 0
+					for ( int g = 1; g < K; g++ )
+						cuts[g] = starts[ (int) ( (long long) g * nf / K ) ];
+					cuts[K] = fsize;									// trailing junk -> last chunk
+					nch = K;
+				}
+			}
+		}
+	}
+
+	// --- not worth splitting: single serial stream (original behaviour) ---
+	if ( nch <= 1 ) {
+		free( d );
+		str_in = real_in; str_out = real_out; real_in->rewind();
+		reset_buffers();
+		if ( !read_mp3() ) return false;
+		if ( !analyze_frames() ) return false;
+		return compress_mp3();
+	}
+
+	// --- compress each chunk into its own memory buffer ---
+	std::vector<unsigned char*> bufs( nch, NULL );
+	std::vector<int> sizes( nch, 0 );
+	std::atomic<bool> all_ok( true );
+
+	auto do_chunk = [&] ( int i ) {
+		str_in  = new iostream( d + cuts[i], 1, cuts[i+1] - cuts[i], 0 );
+		str_out = new iostream( NULL, 1, 0, 1 );
+		reset_buffers();
+		bool ok = read_mp3();
+		if ( ok ) ok = analyze_frames();
+		if ( ok ) ok = compress_mp3();
+		if ( ok ) {
+			int s = str_out->getsize();
+			unsigned char* p = (unsigned char*) malloc( s );
+			if ( p != NULL ) { memcpy( p, str_out->getptr(), s ); bufs[i] = p; sizes[i] = s; }
+			else ok = false;
+		}
+		if ( !ok ) all_ok = false;
+		delete( str_in ); delete( str_out ); str_in = NULL; str_out = NULL;
+		reset_buffers();
+	};
+
+	// parallel only when a batch (-th) isn't already saturating the cores
+	if ( num_threads <= 1 && nch > 1 ) {
+		std::atomic<int> next( 0 );
+		std::vector<std::thread> pool; pool.reserve( nch );
+		auto worker = [&] () { int i; while ( ( i = next.fetch_add( 1 ) ) < nch ) do_chunk( i ); };
+		for ( int t = 0; t < nch; t++ ) pool.emplace_back( worker );
+		for ( auto& t : pool ) t.join();
+	} else {
+		for ( int i = 0; i < nch; i++ ) do_chunk( i );
+	}
+
+	str_in = real_in; str_out = real_out;
+	reset_buffers();
+
+	// --- on any chunk failure, fall back to a single serial stream ---
+	if ( !all_ok ) {
+		for ( int i = 0; i < nch; i++ ) if ( bufs[i] ) free( bufs[i] );
+		free( d ); real_in->rewind(); reset_buffers();
+		if ( !read_mp3() ) return false;
+		if ( !analyze_frames() ) return false;
+		return compress_mp3();
+	}
+
+	// --- assemble "MK" container: magic, ver, K, K x uint32 sizes, sub-streams ---
+	int hdr = 2 + 1 + 1 + 4 * nch;
+	long long total = hdr; for ( int i = 0; i < nch; i++ ) total += sizes[i];
+	unsigned char* arch = (unsigned char*) malloc( (size_t) total );
+	int o = 0;
+	arch[o++] = pmc_magic[0]; arch[o++] = pmc_magic[1];
+	arch[o++] = appversion;   arch[o++] = (unsigned char) nch;
+	for ( int i = 0; i < nch; i++ ) {
+		unsigned int s = (unsigned int) sizes[i];
+		arch[o++] = s & 0xFF; arch[o++] = (s>>8) & 0xFF; arch[o++] = (s>>16) & 0xFF; arch[o++] = (s>>24) & 0xFF;
+	}
+	for ( int i = 0; i < nch; i++ ) { memcpy( arch + o, bufs[i], sizes[i] ); o += sizes[i]; free( bufs[i] ); }
+
+	// --- opt-in self-verify (mp3 convention): decode container, compare to input ---
+	bool ok = true;
+	if ( verify_lv > 0 ) {
+		int save_err = errorlevel; char save_msg[ MSG_SIZE ]; memcpy( save_msg, errormessage, MSG_SIZE );
+		str_in  = new iostream( arch, 1, (int) total, 0 );
+		str_out = new iostream( NULL, 1, 0, 1 );
+		reset_buffers();
+		ok = uncompress_pmp_chunked();
+		if ( ok ) ok = ( str_out->getsize() == fsize ) && ( memcmp( str_out->getptr(), d, fsize ) == 0 );
+		delete( str_in ); delete( str_out );
+		str_in = real_in; str_out = real_out;
+		reset_buffers();
+		errorlevel = save_err; memcpy( errormessage, save_msg, MSG_SIZE );
+	}
+
+	if ( ok ) {
+		real_out->write( arch, 1, (int) total );
+		free( arch ); free( d );
+		mp3filesize = fsize;
+		pmpfilesize = real_out->getsize();
+		return true;
+	}
+
+	// self-verify failed -> safe single-stream fallback
+	free( arch ); free( d ); real_in->rewind(); reset_buffers();
+	if ( !read_mp3() ) return false;
+	if ( !analyze_frames() ) return false;
+	return compress_mp3();
+}
+
+INTERN bool uncompress_pmp_chunked( void )
+{
+	iostream* real_in  = str_in;
+	iostream* real_out = str_out;
+
+	int asize = real_in->getsize();
+	if ( asize < 5 ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; return false; }
+	unsigned char* a = (unsigned char*) malloc( asize );
+	if ( a == NULL ) { snprintf( errormessage, MSG_SIZE, MEM_ERRMSG ); errorlevel = 2; return false; }
+	real_in->rewind();
+	real_in->read( a, 1, asize );
+
+	int nch = a[3];
+	if ( nch < 1 || nch > MAX_CHUNKS ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
+	int o = 4; long long sum = 0; int sizes[ MAX_CHUNKS ];
+	for ( int i = 0; i < nch; i++ ) {
+		sizes[i] = a[o] | (a[o+1]<<8) | (a[o+2]<<16) | (a[o+3]<<24); o += 4; sum += sizes[i];
+		if ( sizes[i] <= 0 ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
+	}
+	if ( (long long) o + sum != asize ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
+	int offs[ MAX_CHUNKS ]; { int p = o; for ( int i = 0; i < nch; i++ ) { offs[i] = p; p += sizes[i]; } }
+
+	std::vector<unsigned char*> bufs( nch, NULL );
+	std::vector<int> bsz( nch, 0 );
+	std::atomic<bool> all_ok( true );
+
+	auto do_chunk = [&] ( int i ) {
+		str_in  = new iostream( a + offs[i], 1, sizes[i], 0 );
+		str_out = new iostream( NULL, 1, 0, 1 );
+		reset_buffers();
+		bool ok = uncompress_pmp();
+		if ( ok ) ok = write_mp3();
+		if ( ok ) {
+			int s = str_out->getsize();
+			unsigned char* q = (unsigned char*) malloc( s );
+			if ( q != NULL ) { memcpy( q, str_out->getptr(), s ); bufs[i] = q; bsz[i] = s; }
+			else ok = false;
+		}
+		if ( !ok ) all_ok = false;
+		delete( str_in ); delete( str_out ); str_in = NULL; str_out = NULL;
+		reset_buffers();
+	};
+
+	if ( num_threads <= 1 && nch > 1 ) {
+		std::atomic<int> next( 0 );
+		std::vector<std::thread> pool; pool.reserve( nch );
+		auto worker = [&] () { int i; while ( ( i = next.fetch_add( 1 ) ) < nch ) do_chunk( i ); };
+		for ( int t = 0; t < nch; t++ ) pool.emplace_back( worker );
+		for ( auto& t : pool ) t.join();
+	} else {
+		for ( int i = 0; i < nch; i++ ) do_chunk( i );
+	}
+
+	str_in = real_in; str_out = real_out;
+	reset_buffers();
+
+	if ( !all_ok ) {
+		for ( int i = 0; i < nch; i++ ) if ( bufs[i] ) free( bufs[i] );
+		free( a );
+		if ( errorlevel < 2 ) { snprintf( errormessage, MSG_SIZE, "chunk decode failed" ); errorlevel = 2; }
+		return false;
+	}
+
+	for ( int i = 0; i < nch; i++ ) { real_out->write( bufs[i], 1, bsz[i] ); free( bufs[i] ); }
+	free( a );
+	mp3filesize = real_out->getsize();
+	pmpfilesize = asize;
 	return true;
 }
 
