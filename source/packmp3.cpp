@@ -360,7 +360,7 @@ INTERN char** filelist_srcroot = NULL;	// [i] = src dir arg that yielded filelis
 INTERN int  action         = A_COMPRESS;// what to do with MP3/PMP files
 INTERN FILE*  msgout   = stdout;	// stream for output of messages
 INTERN int    num_threads = 1;		// -th<N>: worker threads for batch (1 = single-threaded)
-INTERN int    num_chunks  = 2;		// -k<N>: intra-file parallel chunks (1 = single serial stream)
+INTERN int    num_chunks  = 1;		// -k<N>: intra-file parallel chunks (1 = single serial stream, best ratio)
 THREAD_LOCAL bool pipe_on  = false;	// use stdin/stdout instead of filelist (per-thread)
 #else
 INTERN int  err_tol    = 1;			// error threshold ( proceed on warnings yes (2) / no (1) )
@@ -1464,7 +1464,7 @@ INTERN void show_help( void )
 	fprintf( msgout, " [--no-color] disable ANSI color output (also respected via NO_COLOR env var)\n" );
 	fprintf( msgout, " [-o]     overwrite existing files\n" );
 	fprintf( msgout, " [-th<N>] use N threads for batch processing (0=auto; forces verify)\n" );
-	fprintf( msgout, " [-k<N>]  intra-file parallel chunks (default 2; 1=max ratio; 0=auto)\n" );
+	fprintf( msgout, " [-k<N>]  intra-file parallel chunks for speed (default 1=max ratio; 0=auto)\n" );
 	fprintf( msgout, " [-r]     recurse into subdirectories\n" );
 	fprintf( msgout, " [-fs]    preserve source folder structure under -od (use with -r)\n" );
 	fprintf( msgout, " [-dry]   dry run: simulate without writing output files\n" );
