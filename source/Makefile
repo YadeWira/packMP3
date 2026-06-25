@@ -61,13 +61,29 @@ $(TARGET): $(OBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib dll clean linux-x64 win-x64 win-x86 all-platforms
+.PHONY: all dev lib dll clean linux-x64 win-x64 win-x86 all-platforms pgo
 
 all: $(TARGET)
 
 # Developer build: debug symbols, assertions
 dev: CXXFLAGS += -DDEV_BUILD -O0 -g
 dev: $(TARGET)
+
+# Profile-guided optimization: instrument, train on the benchmark corpus
+# (generated if absent), then rebuild using the collected profile. Format-safe:
+# identical output, only faster. Needs lame+ffmpeg for the corpus.
+PGODIR := $(CURDIR)/.pgo
+pgo:
+	@echo "[PGO] 1/3 instrumented build"
+	$(CXX) $(CXXFLAGS) -fprofile-generate -fprofile-dir=$(PGODIR) -o $(TARGET) $(CXXSRC) $(LDFLAGS) -fprofile-generate
+	@test -n "$$(ls ../corpus/*.mp3 2>/dev/null)" || bash ../scripts/make_corpus.sh ../corpus
+	@echo "[PGO] 2/3 training on corpus (compress + decompress)"
+	@rm -rf $(PGODIR)/run && mkdir -p $(PGODIR)/run/d
+	@for f in ../corpus/*.mp3; do ./$(TARGET) a -np -o -od$(PGODIR)/run "$$f" >/dev/null 2>&1; done
+	@for f in $(PGODIR)/run/*.pm3; do ./$(TARGET) x -np -o -od$(PGODIR)/run/d "$$f" >/dev/null 2>&1; done
+	@echo "[PGO] 3/3 optimized rebuild"
+	$(CXX) $(CXXFLAGS) -fprofile-use -fprofile-dir=$(PGODIR) -fprofile-correction -Wno-coverage-mismatch -o $(TARGET) $(CXXSRC) $(LDFLAGS)
+	@echo "[OK] PGO build complete"
 
 # Static library
 lib: CXXFLAGS += -DBUILD_LIB
@@ -82,7 +98,7 @@ dll: $(OBJ)
 
 clean:
 	@echo "Cleaning..."
-	@-rm -f *.o *.a *.so $(TARGET) $(TARGET).exe $(TARGET).dll \
+	@-rm -rf *.o *.a *.so *.gcda $(PGODIR) $(TARGET) $(TARGET).exe $(TARGET).dll \
 	         bin/$(TARGET)_linux_x64 \
 	         bin/$(TARGET)_linux_x64_native \
 	         bin/$(TARGET)_win_x64.exe \

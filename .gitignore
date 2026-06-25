@@ -38,3 +38,5 @@ CONEXION-IA*.md
 
 # generated benchmark corpus
 /corpus/
+/source/.pgo/
+*.gcda
