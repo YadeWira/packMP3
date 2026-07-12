@@ -378,7 +378,7 @@ INTERN const unsigned char appversion_legacy_min = 20; // v2.0 changed the entro
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "06/14/2026";
+INTERN const char*  versiondate  = "07/12/2026";
 INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";

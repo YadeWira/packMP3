@@ -1,10 +1,15 @@
-packMP3 v1.0g (01/22/2016)
+packMP3 v2.0 (07/12/2026)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-packMP3 is a compression program specially designed for further 
-compression of MPEG-1 Audio Layer III audio files without causing any 
-further loss. Typically it reduces the file size of a MP3 file by 16% 
-based on tests with 6000 randomly selected files. 
+packMP3 is a compression program specially designed for further
+compression of MP3 audio files without causing any further loss.
+Typically it reduces the file size of a MP3 file by about 11-16%.
+
+Version 2.0 extends the original MPEG-1 support to the whole MP3 family -
+MPEG-1, MPEG-2 and MPEG-2.5 Audio Layer III (mono, stereo, joint stereo
+and dual channel; constant and variable bitrate). Compressed archives now
+use the ".pm3" extension and can be split into independent chunks for
+multi-core speed (see the "-k" switch).
 
 
 LGPL v3 license and special permissions
@@ -35,13 +40,13 @@ Copyright 2010...2014 by Ratisbon University and Matthias Stirner.
 Usage of packMP3
 ~~~~~~~~~~~~~~~~
 
-MP3 files are compressed and PMP files are decompressed using this
+MP3 files are compressed and .pm3 archives are decompressed using this
 command:
 
  "packMP3 [file(s)]"
 
 packMP3 recognizes file types on its own and decides whether to compress
-(MP3) or decompress (PMP). For unrecognized file types no action is
+(MP3) or decompress (.pm3). For unrecognized file types no action is
 taken. Files are recognized by content, not by extension.
 
 packMP3 supports wildcards like "*.*" and drag and drop of multiple 
@@ -64,11 +69,19 @@ Usage examples:
 Command line switches
 ~~~~~~~~~~~~~~~~~~~~~
 
- -ver  verify files after processing
- -v?   level of verbosity; 0,1 or 2 is allowed (default 0)
- -np   no pause after processing files
- -o    overwrite existing files
- -p    proceed on warnings
+ -ver   verify files after processing
+ -v?    level of verbosity; 0,1 or 2 is allowed (default 0)
+ -np    no pause after processing files
+ -o     overwrite existing files
+ -p     proceed on warnings
+ -k<N>  intra-file parallel chunks for speed (default 1 = best ratio; 0 = auto).
+        Higher N compresses/decompresses a single file on N cores, trading a
+        little ratio for speed. N=1 keeps the maximum ratio.
+ -th<N> use N worker threads for batch processing (0 = auto; forces verify)
+ -od<D> write output files to directory D
+ -r     recurse into subdirectories
+ -fs    preserve source folder structure under -od (use with -r)
+ -dry   dry run: process without writing output files
 
 By default, compression is cancelled on warnings. If warnings are 
 skipped by using "-p", most files with warnings can also be compressed, 
@@ -100,22 +113,25 @@ Usage examples:
 System requirements / Compatibility
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-packMP3 v1.2 runs on:
+packMP3 v2.0 runs on:
 
  - Windows 7 SP1 and later, both x64 and x86 (32-bit)
  - Linux x64
 
 The Windows builds are statically linked (no MSVC redistributable, no
 pthread DLL, no UCRT requirement) so they run on a clean Windows 7 with
-no extra installs. Compressed/decompressed output is bit-for-bit identical
-across all platforms and is independent of the thread count (-th), so a
-PMP made on Linux decompresses to the exact same MP3 on Windows and vice
-versa. ANSI colour output is used on Windows 10+/modern terminals and is
-disabled automatically on older consoles (Windows 7) and when output is
-redirected.
+no extra installs. A .pm3 archive is byte-for-byte identical across
+platforms and thread counts for the same "-k" setting, and it always
+decompresses to the exact original MP3 - so an archive made on Linux
+decompresses to the same MP3 on Windows and vice versa. (Different "-k"
+values produce different archives, but every one reconstructs the input
+losslessly.) ANSI colour output is used on Windows 10+/modern terminals
+and disabled automatically on older consoles (Windows 7) and when output
+is redirected.
 
 Verified on Windows 7 SP1 x64/x86, Windows 10 x64 and Linux x64:
-compression, decompression, bit-exact round-trip, and -th multithreading.
+compression, decompression, bit-exact round-trip, -th batch and -k
+intra-file multithreading.
 
 
 Known Limitations
@@ -124,12 +140,18 @@ Known Limitations
 packMP3 is a compression program specially for MP3 files, so it doesn't
 compress other file types.
 
-Please note that MP3 may stand for three different audio file types: 
-MPEG-1 Audio Layer III, MPEG-2 Audio Layer III and MPEG-2.5 Audio Layer 
-III. Only the first type is supported by packMP3. The file types may not 
-be distinguished by their extension (which would be '.mp3' for each of 
-them) but by their sample rates when playing in audio player software. 
-Only MPEG-1 Audio Layer III supports sample rates of 32kHz and above. 
+MP3 may stand for three different audio file types: MPEG-1, MPEG-2 and
+MPEG-2.5 Audio Layer III. As of v2.0 packMP3 compresses all three (mono,
+stereo, joint stereo and dual channel, constant and variable bitrate).
+
+The MPEG audio family also includes Layer I (.mp1) and Layer II (.mp2),
+which use a completely different, non-Huffman coding scheme. packMP3 has a
+separate codec for them, but it is currently disabled - those files are
+rejected cleanly with a message and never damaged.
+
+Some rare MP3 encodings are rejected (never damaged) rather than
+compressed: free-format bitrate, and frames mixing long and short blocks
+within one granule.
 
 packMP3 has low error tolerance. MP3 files might not work with packMP3 
 even if they work perfectly with audio player software. The command line 
@@ -143,15 +165,27 @@ the command line. This issue also happens with drag and drop in other
 applications, so it might not be a limitation of packMP3 but a 
 limitation of MS Windows. 
 
-Compressed PMP files are not compatible between different packMP3 
-versions. You will get an error message if you try to decompress PMP 
-files with a different version than the one used for compression. You 
-may download older versions of packMP3 from: 
-http://www.placeholder.com/packMP3/binaries/old/ 
+Compressed archives are not compatible between different packMP3 major
+versions - v2.0 changed the format, so v1.x .pmp files cannot be decoded
+by v2.0 and vice versa. You will get an error message if you try to
+decompress an archive made by an incompatible version.
 
 
 History
 ~~~~~~~
+
+v2.0 (07/12/2026)
+ - full MP3 family: MPEG-1, MPEG-2 and MPEG-2.5 Audio Layer III
+   (mono/stereo/joint/dual, CBR and VBR), all lossless
+ - compressed archives now use the ".pm3" extension
+ - "-k<N>": intra-file parallel chunking for multi-core encode/decode
+   (default 1 = best ratio)
+ - "-th<N>" batch multithreading, "-od" output dir, "-r"/"-fs" recursion,
+   "-dry" dry run
+ - retuned entropy models for a better ratio; link-time optimization and
+   an optional profile-guided build ("make pgo")
+ - separate Layer I/II codec present but disabled for now (mp1/mp2 rejected
+   cleanly, never damaged)
 
 v1.0 (01/09/12) (non public)
  - first released version
