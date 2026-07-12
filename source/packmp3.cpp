@@ -7368,6 +7368,63 @@ INTERN bool l2_decompress( void )
 INTERN bool list_pmp( void )
 {
 	long long sz = (long long) str_in->getsize();
+
+	if ( arch_chunked ) {
+		// "MK" container: header + N independent "MS" sub-streams. Walk the
+		// chunk table and read each sub-stream's own header (cheap, no main
+		// data decode), summing frames and checking format/bitrate consistency.
+		unsigned char* a = (unsigned char*) malloc( (size_t) sz );
+		if ( a == NULL ) { snprintf( errormessage, MSG_SIZE, MEM_ERRMSG ); errorlevel = 2; return false; }
+		str_in->rewind();
+		str_in->read( a, 1, (int) sz );
+		if ( sz < 5 ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
+		int vmaj = a[2] / 10, vmin = a[2] % 10;
+		int nch = a[3];
+		if ( nch < 1 || nch > MAX_CHUNKS ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
+		int o = 4; int sizes[ MAX_CHUNKS ];
+		for ( int i = 0; i < nch; i++ ) { sizes[i] = a[o]|(a[o+1]<<8)|(a[o+2]<<16)|(a[o+3]<<24); o += 4; }
+		int offs[ MAX_CHUNKS ]; { int p = o; for ( int i = 0; i < nch; i++ ) { offs[i] = p; p += sizes[i]; } }
+
+		iostream* real_in = str_in;
+		long long tot_frames = 0; int ref_ch = -1, ref_sr = -1, ref_br = -1; bool br_varies = false;
+		const char* fmt = NULL; const char* ch_label = NULL;
+		bool ok = true;
+		for ( int i = 0; i < nch && ok; i++ ) {
+			str_in = new iostream( a + offs[i], 1, sizes[i], 0 );
+			unsigned char hb = 0;
+			str_in->read( &hb, 1, 1 ); str_in->read( &hb, 1, 1 ); // sub-archive magic (MS)
+			str_in->read( &hb, 1, 1 );	// sub-archive version byte
+			pmp_archive_version = hb;
+			ok = pmp_read_header( str_in );
+			if ( ok ) {
+				tot_frames += g_nframes;
+				// snapshot labels/refs BEFORE reset_buffers() clears i_channels etc.
+				if ( fmt == NULL ) fmt = pmp_format_label();
+				if ( ref_ch == -1 ) { ref_ch = g_nchannels; ref_sr = g_samplerate; ref_br = g_bitrate; ch_label = pmp_channel_label(); }
+				else if ( g_bitrate != ref_br ) br_varies = true;
+			}
+			delete( str_in );
+			reset_buffers();
+		}
+		str_in = real_in;
+		free( a );
+		if ( !ok ) return false;
+
+		fprintf( msgout, "  version  : v%i.%i\n", vmaj, vmin );
+		fprintf( msgout, "  packed   : %s\n", pmp_human_size( sz ).c_str() );
+		fprintf( msgout, "  chunks   : %i (intra-file parallel)\n", nch );
+		fprintf( msgout, "  format   : %s\n", fmt );
+		fprintf( msgout, "  frames   : %lli\n", tot_frames );
+		fprintf( msgout, "  channels : %i (%s)\n", ref_ch, ch_label );
+		fprintf( msgout, "  rate     : %i Hz\n", ref_sr );
+		if ( !br_varies && ref_br > 0 ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", ref_br );
+		else                            fprintf( msgout, "  bitrate  : VBR / not global\n" );
+
+		pmpfilesize = (int) sz;
+		mp3filesize = 0;
+		return true;
+	}
+
 	unsigned char b = 0;
 	str_in->rewind();
 	str_in->read( &b, 1, 1 );	// magic byte 0
