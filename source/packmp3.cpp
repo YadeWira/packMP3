@@ -598,7 +598,7 @@ int main( int argc, char** argv )
 
 	// mixed-mode warning: both directions happened in one run
 	if ( mix_mode && acc_mp3_cnt > 0 && acc_pmp_cnt > 0 && verbosity >= 0 ) {
-		fprintf( msgout, "\n%s[WARNING]%s Mixed mode: compressed %i MP3 and decompressed %i PMP files.\n",
+		fprintf( msgout, "\n%s[WARNING]%s Mixed mode: compressed %i MP3 and decompressed %i .pm3 files.\n",
 			COL_BYELLOW, COL_RESET, acc_mp3_cnt, acc_pmp_cnt );
 		fprintf( msgout, "  Running 'mix' on already-processed files can undo previous work.\n" );
 		fprintf( msgout, "  Use 'a' (compress only) or 'x' (decompress only) for safer operation.\n" );
@@ -1443,7 +1443,7 @@ INTERN void show_help( void )
 {
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "%s -- lossless MP3 compression. Typical reduction: ~16%%.\n", appname );
-	fprintf( msgout, "Compresses MPEG audio (MP3) files to PMP format and decompresses\n" );
+	fprintf( msgout, "Compresses MPEG audio (MP3) files to .pm3 archives and decompresses\n" );
 	fprintf( msgout, "them back, with bit-for-bit identical reconstruction.\n" );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Website: %s\n", website );
@@ -1451,10 +1451,10 @@ INTERN void show_help( void )
 	fprintf( msgout, "Usage: %s <subcommand> [switches] [filename(s)]\n", appname );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Subcommands:\n" );
-	fprintf( msgout, " a         compress only: process MP3 files, skip PMP\n" );
-	fprintf( msgout, " x         decompress only: process PMP files, skip MP3\n" );
+	fprintf( msgout, " a         compress only: process MP3 files, skip .pm3\n" );
+	fprintf( msgout, " x         decompress only: process .pm3 files, skip MP3\n" );
 	fprintf( msgout, " mix       mixed mode: auto-detect (warns if both directions used)\n" );
-	fprintf( msgout, " list      list PMP file info without decompressing\n" );
+	fprintf( msgout, " list      list .pm3 file info without decompressing\n" );
 	fprintf( msgout, " stats     show MP3 file info (size, layer, channels) without compressing\n" );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Switches:\n" );
@@ -1529,7 +1529,7 @@ INTERN void process_file( void )
 				break;
 
 			case A_LIST:
-				snprintf( errormessage, MSG_SIZE, "list is only supported for PMP files" );
+				snprintf( errormessage, MSG_SIZE, "list is only supported for .pm3 files" );
 				errorlevel = 2;
 				break;
 			#endif
@@ -4083,7 +4083,7 @@ INTERN inline bool pmp_read_header( iostream* str )
 	
 	// check for possible mistakes made by myself
 	if ( ( i_bitrate == 0xF ) || ( i_samplerate == 0x3 ) ) {
-		snprintf( errormessage, MSG_SIZE, "not a proper PMP file" );
+		snprintf( errormessage, MSG_SIZE, "not a proper .pm3 file" );
 		errorlevel = 2;
 		return false;
 	}
