@@ -3,10 +3,12 @@
 #include <ctime>
 #include <cstdio>
 
-// v1.2 -th batch threading: process independent files concurrently.
+// intra-file chunking (-k) needs threading/atomics in both CLI and lib builds.
+#include <thread>
+#include <atomic>
+
+// v1.2 -th batch threading: process independent files concurrently (CLI only).
 #if !defined(BUILD_LIB)
-#  include <thread>
-#  include <atomic>
 #  include <mutex>
 #  include <chrono>
 #  include <csignal>
@@ -338,14 +340,16 @@ THREAD_LOCAL int  errorlevel;
 
 INTERN bool compress_only   = false;	// 'a' subcommand: only compress MP3 files, skip PMP silently
 INTERN bool decompress_only = false;	// 'x' subcommand: only decompress PMP files, skip MP3 silently
-INTERN bool mix_mode        = false;	// 'mix' subcommand: auto-detect (warns if both directions used)
-INTERN bool subcmd_given    = false;	// a subcommand was explicitly provided
+INTERN int  num_threads = 1;		// -th<N> (CLI) / always 1 in lib builds (no batch loop there)
+INTERN int  num_chunks  = 1;		// -k<N> (CLI) / intra-file parallel chunks; 1 = single serial stream, best ratio
+INTERN int  verify_lv  = 0;			// verification level (0=none/1=simple/2=detailed); always 0 in lib builds (not yet exposed)
 
 #if !defined( BUILD_LIB )
+INTERN bool mix_mode        = false;	// 'mix' subcommand: auto-detect (warns if both directions used)
+INTERN bool subcmd_given    = false;	// a subcommand was explicitly provided
 INTERN int  verbosity  = 0;			// level of verbosity (0 default; -1 progress bar via -vp)
 INTERN bool overwrite  = false;		// overwrite files yes / no
 INTERN bool wait_exit  = true;		// pause after finished yes / no
-INTERN int  verify_lv  = 0;			// verification level ( none (0), simple (1), detailed output (2) )
 INTERN int  err_tol    = 1;			// error threshold ( proceed on warnings yes (2) / no (1) )
 
 INTERN bool developer      = false;		// allow developers functions yes/no
@@ -359,8 +363,6 @@ INTERN char* outdir        = NULL;		// -od<DIR>: write output files to this dire
 INTERN char** filelist_srcroot = NULL;	// [i] = src dir arg that yielded filelist[i] via -r (for -fs); NULL otherwise
 INTERN int  action         = A_COMPRESS;// what to do with MP3/PMP files
 INTERN FILE*  msgout   = stdout;	// stream for output of messages
-INTERN int    num_threads = 1;		// -th<N>: worker threads for batch (1 = single-threaded)
-INTERN int    num_chunks  = 1;		// -k<N>: intra-file parallel chunks (1 = single serial stream, best ratio)
 THREAD_LOCAL bool pipe_on  = false;	// use stdin/stdout instead of filelist (per-thread)
 #else
 INTERN int  err_tol    = 1;			// error threshold ( proceed on warnings yes (2) / no (1) )

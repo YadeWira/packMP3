@@ -61,7 +61,7 @@ $(TARGET): $(OBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib dll clean linux-x64 win-x64 win-x86 all-platforms pgo
+.PHONY: all dev lib so dll clean linux-x64 win-x64 win-x86 all-platforms pgo
 
 all: $(TARGET)
 
@@ -90,11 +90,24 @@ lib: CXXFLAGS += -DBUILD_LIB
 lib: $(OBJ)
 	ar rcs $(TARGET)lib.a $(OBJ)
 
-# Shared library
-dll: CXXFLAGS += -DBUILD_DLL -fvisibility=hidden
-dll: LDFLAGS  += -Wl,--out-implib,lib$(TARGET).a
-dll: $(OBJ)
-	$(CXX) -shared -o $(TARGET).so $^ $(LDFLAGS)
+# Shared library (Linux/macOS: lib<name>.so, no import lib needed on ELF)
+# -fPIC is required: the codec's thread_local globals need the
+# position-independent (global-dynamic) TLS model to be usable from a
+# shared object; without it, ld fails with a TPOFF32 relocation error.
+so: CXXFLAGS += -DBUILD_DLL -fvisibility=hidden -fPIC
+so: $(OBJ)
+	$(CXX) -shared -o lib$(TARGET).so $^ $(LDFLAGS)
+
+# Windows DLL (cross-compile with mingw): packMP3.dll + import lib for linking.
+# Requires the POSIX thread model (win32 mingw miscompiles thread_local
+# destructors across a DLL boundary, faulting at process exit).
+dll: bin
+	$(WIN64) -I. -std=c++17 -O3 -flto=auto -Wall -funroll-loops -ffast-math \
+	  -fomit-frame-pointer -DUNIX -DBUILD_DLL -pthread -shared \
+	  -o bin/$(TARGET).dll $(CXXSRC) -s -flto=auto \
+	  -static -static-libgcc -static-libstdc++ -pthread \
+	  -Wl,--out-implib,bin/lib$(TARGET).a
+	@echo "[OK] bin/$(TARGET).dll + bin/lib$(TARGET).a"
 
 clean:
 	@echo "Cleaning..."
@@ -102,7 +115,9 @@ clean:
 	         bin/$(TARGET)_linux_x64 \
 	         bin/$(TARGET)_linux_x64_native \
 	         bin/$(TARGET)_win_x64.exe \
-	         bin/$(TARGET)_win_x86.exe
+	         bin/$(TARGET)_win_x86.exe \
+	         bin/$(TARGET).dll \
+	         bin/lib$(TARGET).a
 
 # ---- Cross-compilation targets -----------------------------------------------
 #
