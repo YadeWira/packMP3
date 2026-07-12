@@ -29,6 +29,7 @@
 # built CLI binary (named like the project, so ignore by path)
 /source/packMP3
 /bin/
+/source/bin/
 
 # Folders to ignore
 /zzz_backup/
