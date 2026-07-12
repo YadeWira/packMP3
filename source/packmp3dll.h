@@ -16,12 +16,20 @@
 	function declarations: library only functions
 	----------------------------------------------- */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 IMPORT bool pmplib_convert_stream2stream( char* msg );
 IMPORT bool pmplib_convert_file2file( char* in, char* out, char* msg );
 IMPORT bool pmplib_convert_stream2mem( unsigned char** out_file, unsigned int* out_size, char* msg );
 IMPORT void pmplib_init_streams( void* in_src, int in_type, int in_size, void* out_dest, int out_type );
 IMPORT const char* pmplib_version_info( void );
 IMPORT const char* pmplib_short_name( void );
+
+#ifdef __cplusplus
+}
+#endif
 
 /* a short reminder about input/output stream types
    for the pmplib_init_streams() function
