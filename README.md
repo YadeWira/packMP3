@@ -153,9 +153,9 @@ whole file:
 
 | `-k` | ratio (corpus avg) | encode | decode |
 |---|---|---|---|
-| `1` (default) | 88.6% | ~274 ms | ~280 ms |
-| `2` | 89.3% | ~140 ms (~2×) | ~145 ms (~1.9×) |
-| `4` | 89.9% | ~90 ms (~3×) | ~95 ms (~3×) |
+| `1` (default) | 88.6% | ~265 ms | ~274 ms |
+| `2` | 89.2% | ~142 ms (~1.9×) | ~153 ms (~1.8×) |
+| `4` | 89.8% | ~82 ms (~3.2×) | ~85 ms (~3.2×) |
 
 Use `-k1` when ratio matters most (archival, bandwidth-constrained
 transfer). Use `-k4`/`-k0` (auto) when speed matters most (interactive
