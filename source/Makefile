@@ -61,7 +61,7 @@ $(TARGET): $(OBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib so dll clean linux-x64 win-x64 win-x86 all-platforms pgo
+.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo
 
 all: $(TARGET)
 
@@ -99,15 +99,25 @@ so: $(OBJ)
 	$(CXX) -shared -o lib$(TARGET).so $^ $(LDFLAGS)
 
 # Windows DLL (cross-compile with mingw): packMP3.dll + import lib for linking.
-# Requires the POSIX thread model (win32 mingw miscompiles thread_local
-# destructors across a DLL boundary, faulting at process exit).
-dll: bin
+# dll = 64-bit (most common ask); dll-x86 = 32-bit; dll-all = both.
+dll: dll-x64
+dll-all: dll-x64 dll-x86
+
+dll-x64: bin
 	$(WIN64) -I. -std=c++17 -O3 -flto=auto -Wall -funroll-loops -ffast-math \
 	  -fomit-frame-pointer -DUNIX -DBUILD_DLL -pthread -shared \
 	  -o bin/$(TARGET).dll $(CXXSRC) -s -flto=auto \
 	  -static -static-libgcc -static-libstdc++ -pthread \
 	  -Wl,--out-implib,bin/lib$(TARGET).a
 	@echo "[OK] bin/$(TARGET).dll + bin/lib$(TARGET).a"
+
+dll-x86: bin
+	$(WIN32) -I. -std=c++17 -O3 -flto=auto -Wall -funroll-loops -ffast-math \
+	  -fomit-frame-pointer -DUNIX -DBUILD_DLL -pthread -shared \
+	  -o bin/$(TARGET)32.dll $(CXXSRC) -s -flto=auto \
+	  -static -static-libgcc -static-libstdc++ -pthread \
+	  -Wl,--out-implib,bin/lib$(TARGET)32.a
+	@echo "[OK] bin/$(TARGET)32.dll + bin/lib$(TARGET)32.a"
 
 clean:
 	@echo "Cleaning..."
@@ -117,7 +127,9 @@ clean:
 	         bin/$(TARGET)_win_x64.exe \
 	         bin/$(TARGET)_win_x86.exe \
 	         bin/$(TARGET).dll \
-	         bin/lib$(TARGET).a
+	         bin/lib$(TARGET).a \
+	         bin/$(TARGET)32.dll \
+	         bin/lib$(TARGET)32.a
 
 # ---- Cross-compilation targets -----------------------------------------------
 #

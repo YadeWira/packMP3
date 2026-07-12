@@ -195,14 +195,24 @@ the CLI.
 
 ```bash
 cd source
-make lib   # -> packMP3lib.a   static lib (Linux)
-make so    # -> libpackMP3.so  Unix shared object (Linux/macOS)
-make dll   # -> bin/packMP3.dll + bin/libpackMP3.a  (Windows, mingw cross-compile)
+make lib      # -> packMP3lib.a          static lib (Linux)
+make so       # -> libpackMP3.so         Unix shared object (Linux/macOS)
+make dll      # -> bin/packMP3.dll + bin/libpackMP3.a     Windows x64 (mingw cross-compile)
+make dll-x86  # -> bin/packMP332.dll + bin/libpackMP332.a Windows x86
+make dll-all  # both dll and dll-x86
 ```
+
+Pre-built library bundles (matching the sibling projects' packaging) are
+also attached to each [release](https://github.com/YadeWira/packMP3/releases):
+`packMP3-<ver>-linux-x64-lib.tar.gz`, `packMP3-<ver>-win64-lib.zip`,
+`packMP3-<ver>-win32-lib.zip` — each includes the library, headers, a
+`.def` file for MSVC (`lib /def:packMP3.def /machine:x64`), and a short
+README.
 
 Header: `source/packmp3lib.h` for building the library itself,
 `source/packmp3dll.h` for consumers linking against the shared
-lib/DLL.
+lib/DLL. Both wrap the `pmplib_*` declarations in `extern "C"`, so
+exported symbols have plain, unmangled names.
 
 ### Functions
 
