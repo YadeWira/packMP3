@@ -43,6 +43,11 @@ else
   UPX =
 endif
 
+# Layer I/II backend: packMP2 library (sibling project, vendored .a + header
+# under vendor/packmp2/ for now -- see vendor/packmp2/packmp2.h). -lstdc++
+# is needed since packmp2's zpaq backend is C++.
+LDFLAGS += -Lvendor/packmp2 -lpackmp2 -lstdc++
+
 # ---- Compiler-specific flags ----
 ifeq ($(findstring clang,$(CXX)),clang)
   CXXFLAGS += -Wno-unknown-warning-option
