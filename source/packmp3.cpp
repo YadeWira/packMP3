@@ -392,6 +392,15 @@ INTERN const char*  mp3_ext      = "mp3";
 #endif
 INTERN const char   pmp_magic[] = { 'M', 'S' };
 INTERN const char   l2_magic[]  = { 'M', '2' };	// separate container for Layer I/II archives
+#if !defined(BUILD_LIB)
+// packMP2's unpack/pack engine uses shared global buffers internally (not
+// thread_local, unlike everything above) -- concurrent calls race per its
+// own documented limitation. -th runs multiple files' process_file() on
+// separate threads, so any packmp2_compress/_decompress/_query_original_size
+// call must be serialized process-wide until packMP2 ships a thread-safe
+// (per-call heap-alloc) engine.
+INTERN std::mutex l2_pmp2_mutex;
+#endif
 INTERN const char   pmc_magic[] = { 'M', 'K' };	// chunked container: K independent "MS" sub-streams
 #define MAX_CHUNKS       64				// upper bound on -k
 #define MIN_FRAMES_CHUNK 16				// don't split below this many frames per chunk
@@ -7045,7 +7054,11 @@ INTERN bool l2_compress( void )
 	packmp2_opts opts = packmp2_opts_default();
 	char pmsg[ 256 ] = {0};
 	unsigned char* out = NULL; size_t outlen = 0;
-	int rc = packmp2_compress( d, (size_t) fsize, &out, &outlen, &opts, pmsg );
+	int rc;
+	{
+		std::lock_guard<std::mutex> lk( l2_pmp2_mutex );	// packMP2 engine isn't thread-safe
+		rc = packmp2_compress( d, (size_t) fsize, &out, &outlen, &opts, pmsg );
+	}
 
 	bool stored = ( rc != 0 );	// packmp2 failure -> fall back to verbatim store
 	if ( !stored ) {
@@ -7085,7 +7098,11 @@ INTERN bool l2_decompress( void )
 
 	unsigned char* out = NULL; size_t outlen = 0;
 	char pmsg[ 256 ] = {0};
-	int rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
+	int rc;
+	{
+		std::lock_guard<std::mutex> lk( l2_pmp2_mutex );	// packMP2 engine isn't thread-safe
+		rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
+	}
 	free( payload );
 	if ( rc != 0 ) { snprintf( errormessage, MSG_SIZE, "packmp2 decode failed: %s", pmsg ); errorlevel = 2; return false; }
 
@@ -7231,7 +7248,11 @@ INTERN bool list_l2( void )
 	if ( hd[3] != 1 ) {
 		unsigned char* out = NULL; size_t outlen = 0;
 		char pmsg[ 256 ] = {0};
-		int rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
+		int rc;
+		{
+			std::lock_guard<std::mutex> lk( l2_pmp2_mutex );	// packMP2 engine isn't thread-safe
+			rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
+		}
 		free( payload );
 		if ( rc != 0 ) { snprintf( errormessage, MSG_SIZE, "packmp2 decode failed: %s", pmsg ); errorlevel = 2; return false; }
 		raw = out; rawlen = outlen; free_raw = true;
