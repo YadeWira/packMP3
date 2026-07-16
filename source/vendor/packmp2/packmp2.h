@@ -9,11 +9,20 @@
    this directory to build packMP3 from source. Once both repos are stable
    and pushed, this should become a git submodule instead of a pinned copy.
 
+   Windows builds: packMP3's win-x64/win-x86 cross-compile targets need
+   mingw-built static libs too (win-x64/win-x86 aren't BUILD_LIB, so they
+   reference packmp2 symbols directly, unlike dll-x64/dll-x86). Run
+   `make mingw64-lib` / `make mingw-lib` in the packMP2 repo and copy the
+   resulting libpackmp2.a into vendor/packmp2/win64/ and vendor/packmp2/win32/
+   respectively (same header, same API, just a different target triple).
+
    Thread-safety: functions are reentrant for independent inputs but the
    underlying unpack/pack engine uses shared global buffers (UM2_ARRAY,
    SKIPPED_DATA). Concurrent calls to compress() or decompress() will
    race. For multi-threaded use, serialize access or use separate processes.
    Planned fix (v0.6): per-call heap allocation of frame/skip buffers.
+   packMP3 itself already serializes every call with a mutex (l2_pmp2_mutex
+   in packmp3.cpp) so its own -th batch threading is safe regardless.
 
    Error reporting: every function takes a char msg[256] buffer that receives
    a human-readable diagnostic on failure (empty string on success).
