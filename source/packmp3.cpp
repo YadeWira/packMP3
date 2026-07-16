@@ -117,6 +117,8 @@ INTERN inline int mp3_ngr( int mpeg );
 #if !defined(BUILD_LIB)
 INTERN bool l2_compress( void );	// Layer I/II, backed by the packMP2 library
 INTERN bool l2_decompress( void );
+INTERN bool stats_l2( void );	// 'stats' on a raw Layer I/II input file
+INTERN bool list_l2( void );	// 'list' on an F_PL2 ("M2") archive
 #endif
 INTERN inline int mp3_frame_bytes( int mpeg, int samples, int bits, int padding );
 INTERN inline int mp3_lsf_scf_params( const mp3Frame* frame, const granuleInfo* granule, int ch, int scfsz[4], int scfcnt[4] );
@@ -1674,7 +1676,7 @@ INTERN void process_file( void )
 		}
 	}
 	#if !defined(BUILD_LIB)
-	// Layer I/II separate codec (only the compress/decompress action)
+	// Layer I/II, backed by the packMP2 library
 	else if ( filetype == F_MP2 ) {
 		if ( action == A_COMPRESS ) {
 			execute( l2_compress );
@@ -1685,9 +1687,19 @@ INTERN void process_file( void )
 				execute( compare_output );
 			}
 		}
+		else if ( action == A_STATS ) execute( stats_l2 );
+		else if ( action == A_LIST ) {
+			snprintf( errormessage, MSG_SIZE, "list is only supported for .pm3 archives" );
+			errorlevel = 2;
+		}
 	}
 	else if ( filetype == F_PL2 ) {
 		if ( action == A_COMPRESS ) execute( l2_decompress );
+		else if ( action == A_LIST ) execute( list_l2 );
+		else if ( action == A_STATS ) {
+			snprintf( errormessage, MSG_SIZE, "stats is only supported for raw mp2/mp1 files" );
+			errorlevel = 2;
+		}
 	}
 	#endif
 	#if !defined(BUILD_LIB) && defined(DEV_BUILD)
@@ -1803,8 +1815,9 @@ INTERN bool check_file( void )
 		// skip silently if compress-only: reset to F_UNK so process_file()
 		// does nothing (was a NULL-str_out crash when it tried to decode).
 		if ( compress_only ) { filetype = F_UNK; return false; }
-		// v1.2 'list' reads the header from the input stream only — no output (L3 only)
-		if ( action == A_LIST && filetype == F_PMP ) return true;
+		// v1.2 'list' reads the header from the input stream only — no output
+		// (L3 -> F_PMP; Layer I/II -> F_PL2, v3.0)
+		if ( action == A_LIST && ( filetype == F_PMP || filetype == F_PL2 ) ) return true;
 		// create filenames. Layer I/II archives reconstruct to .mp2 (Layer II
 		// dominates real-world content; Layer I is rare -- content itself is
 		// always correct regardless of this cosmetic extension choice).
@@ -1852,8 +1865,9 @@ INTERN bool check_file( void )
 		// skip silently if decompress-only: reset to F_UNK so process_file()
 		// does nothing (was a NULL-str_out crash when it tried to compress).
 		if ( decompress_only ) { filetype = F_UNK; return false; }
-		// v1.2 'stats' reads the MP3 only — no output file (L3 only)
-		if ( action == A_STATS && filetype == F_MP3 ) return true;
+		// v1.2 'stats' reads the input only — no output file
+		// (L3 -> F_MP3; Layer I/II -> F_MP2, v3.0)
+		if ( action == A_STATS && ( filetype == F_MP3 || filetype == F_MP2 ) ) return true;
 		// create filenames
 		if ( !pipe_on ) {
 			mp3filename = (char*) calloc( strlen( filename ) + 1, sizeof( char ) );
@@ -7079,6 +7093,169 @@ INTERN bool l2_decompress( void )
 	free( out );
 	pmpfilesize = str_in->getsize();
 	mp3filesize = str_out->getsize();
+	return true;
+}
+
+// Layer I/II frame size in bytes (read-only, cosmetic use in list_l2/stats_l2
+// below -- packMP2 itself owns frame-format knowledge for the codec path,
+// this just walks sync words to report frame count / CBR-vs-VBR).
+INTERN inline int l2_frame_bytes( int mpeg, int layer, int samples, int bits, int padding )
+{
+	int br = bitrate_table[ mpeg ][ layer ][ bits ];   // kbps
+	int sr = samplerate_table[ mpeg ][ samples ];      // Hz
+	if ( br <= 0 || sr <= 0 ) return 0;
+	if ( layer == LAYER_I )
+		return ( ( 12 * br * 1000 ) / sr + ( padding ? 1 : 0 ) ) * 4;
+	return ( 144 * br * 1000 ) / sr + ( padding ? 1 : 0 );	// LAYER_II
+}
+
+INTERN const char* l2_format_label( int mpeg, int layer )
+{
+	switch ( mpeg ) {
+		case MP3_V1_0: return ( layer == LAYER_I ) ? "MPEG-1 Layer I"   : "MPEG-1 Layer II";
+		case MP3_V2_0: return ( layer == LAYER_I ) ? "MPEG-2 Layer I"   : "MPEG-2 Layer II";
+		case MP3_V2_5: return ( layer == LAYER_I ) ? "MPEG-2.5 Layer I" : "MPEG-2.5 Layer II";
+		default:       return "MPEG Layer I/II";
+	}
+}
+
+INTERN const char* l2_channel_label( int mode )
+{
+	switch ( mode ) {
+		case MP3_STEREO:        return "stereo";
+		case MP3_JOINT_STEREO:  return "joint stereo";
+		case MP3_DUAL_CHANNEL:  return "dual channel";
+		case MP3_MONO:          return "mono";
+		default:                return "unknown";
+	}
+}
+
+// Finds the first valid Layer I/II sync word in buf, then walks frame sync
+// words from there to count frames and detect VBR. Read-only, no full decode.
+INTERN bool l2_scan( const unsigned char* buf, int len, int* out_mpeg, int* out_layer,
+                     int* out_channels, int* out_samplerate, int* out_bitrate,
+                     bool* out_vbr, long long* out_frames )
+{
+	int p = 0;
+	int mpeg = 0, layer = 0, mode = 0, samplerate = 0, bitrate = 0;
+	for ( ; p + 4 <= len; p++ ) {
+		if ( buf[p] != 0xFF || ( buf[p+1] & 0xE0 ) != 0xE0 ) continue;
+		int lb = ( buf[p+1] >> 1 ) & 0x3, ver = ( buf[p+1] >> 3 ) & 0x3;
+		int br = ( buf[p+2] >> 4 ) & 0xF, sr = ( buf[p+2] >> 2 ) & 0x3;
+		if ( lb == 0 || ver == 1 || br == 0 || br == 15 || sr == 3 ) continue;
+		int lyr = 4 - lb;
+		if ( lyr != LAYER_I && lyr != LAYER_II ) continue;
+		int hz = samplerate_table[ ver ][ sr ];
+		int kbps = bitrate_table[ ver ][ lyr ][ br ];
+		if ( hz <= 0 || kbps <= 0 ) continue;
+		mpeg = ver; layer = lyr; samplerate = hz; bitrate = kbps;
+		mode = ( buf[p+3] >> 6 ) & 0x3;
+		break;
+	}
+	if ( p + 4 > len ) return false;	// no valid Layer I/II sync found
+
+	long long frames = 0; int ref_br = bitrate; bool vbr = false;
+	int q = p;
+	while ( q + 4 <= len ) {
+		if ( buf[q] != 0xFF || ( buf[q+1] & 0xE0 ) != 0xE0 ) break;
+		int lb = ( buf[q+1] >> 1 ) & 0x3, ver = ( buf[q+1] >> 3 ) & 0x3;
+		int br = ( buf[q+2] >> 4 ) & 0xF, sr = ( buf[q+2] >> 2 ) & 0x3;
+		int pad = ( buf[q+2] >> 1 ) & 0x1;
+		if ( lb == 0 || ver == 1 || br == 0 || br == 15 || sr == 3 ) break;
+		int lyr = 4 - lb;
+		if ( lyr != layer || ver != mpeg ) break;	// format change: stop counting
+		int kbps = bitrate_table[ ver ][ lyr ][ br ];
+		int fsize = l2_frame_bytes( ver, lyr, sr, br, pad );
+		if ( kbps <= 0 || fsize <= 0 ) break;
+		if ( kbps != ref_br ) vbr = true;
+		frames++;
+		q += fsize;
+	}
+
+	*out_mpeg = mpeg; *out_layer = layer; *out_channels = mode;
+	*out_samplerate = samplerate; *out_bitrate = bitrate;
+	*out_vbr = vbr; *out_frames = frames;
+	return true;
+}
+
+// 'stats' on a raw Layer I/II input file: sync-scan only, no packmp2 call.
+INTERN bool stats_l2( void )
+{
+	long long sz = (long long) str_in->getsize();
+	unsigned char* buf = (unsigned char*) malloc( sz > 0 ? (size_t) sz : 1 );
+	if ( buf == NULL ) { snprintf( errormessage, MSG_SIZE, MEM_ERRMSG ); errorlevel = 2; return false; }
+	str_in->rewind();
+	str_in->read( buf, 1, (int) sz );
+
+	int mpeg, layer, channels, samplerate, bitrate; bool vbr; long long frames;
+	bool ok = l2_scan( buf, (int) sz, &mpeg, &layer, &channels, &samplerate, &bitrate, &vbr, &frames );
+	free( buf );
+	if ( !ok ) { snprintf( errormessage, MSG_SIZE, "no valid Layer I/II frame found" ); errorlevel = 2; return false; }
+
+	fprintf( msgout, "  size     : %s\n", pmp_human_size( sz ).c_str() );
+	fprintf( msgout, "  format   : %s\n", l2_format_label( mpeg, layer ) );
+	fprintf( msgout, "  frames   : %lli\n", frames );
+	fprintf( msgout, "  channels : %i (%s)\n", ( channels == MP3_MONO ) ? 1 : 2, l2_channel_label( channels ) );
+	fprintf( msgout, "  rate     : %i Hz\n", samplerate );
+	if ( !vbr ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", bitrate );
+	else        fprintf( msgout, "  bitrate  : VBR / not global\n" );
+
+	pmpfilesize = 0;
+	mp3filesize = (int) sz;
+	return true;
+}
+
+// 'list' on an F_PL2 ("M2") archive: peeks the outer header, then either
+// reads the stored-fallback payload directly or runs packmp2_decompress
+// in-memory to recover the raw Layer I/II bytes for a sync-scan. packMP2
+// files are small enough that a full decompress here is cheap (unlike
+// Layer III's arithmetic main data, which list_pmp deliberately avoids).
+INTERN bool list_l2( void )
+{
+	long long sz = (long long) str_in->getsize();
+	unsigned char hd[ 4 ];
+	str_in->rewind();
+	if ( str_in->read( hd, 1, 4 ) != 4 || hd[0] != (unsigned char) l2_magic[0] || hd[1] != (unsigned char) l2_magic[1] ) {
+		snprintf( errormessage, MSG_SIZE, "not a Layer I/II archive" );
+		errorlevel = 2;
+		return false;
+	}
+	int vmaj = hd[2] / 10, vmin = hd[2] % 10;
+	int rest = (int) sz - 4;
+	unsigned char* payload = (unsigned char*) malloc( rest > 0 ? (size_t) rest : 1 );
+	if ( payload == NULL ) { snprintf( errormessage, MSG_SIZE, MEM_ERRMSG ); errorlevel = 2; return false; }
+	str_in->read( payload, 1, rest );
+
+	unsigned char* raw = payload; size_t rawlen = (size_t) rest; bool free_raw = false;
+	const char* method = "stored (verbatim)";
+	if ( hd[3] != 1 ) {
+		unsigned char* out = NULL; size_t outlen = 0;
+		char pmsg[ 256 ] = {0};
+		int rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
+		free( payload );
+		if ( rc != 0 ) { snprintf( errormessage, MSG_SIZE, "packmp2 decode failed: %s", pmsg ); errorlevel = 2; return false; }
+		raw = out; rawlen = outlen; free_raw = true;
+		method = "packMP2 (zstd/zpaq)";
+	}
+
+	int mpeg, layer, channels, samplerate, bitrate; bool vbr; long long frames;
+	bool ok = l2_scan( raw, (int) rawlen, &mpeg, &layer, &channels, &samplerate, &bitrate, &vbr, &frames );
+	if ( free_raw ) free( raw ); else free( payload );
+	if ( !ok ) { snprintf( errormessage, MSG_SIZE, "no valid Layer I/II frame found" ); errorlevel = 2; return false; }
+
+	fprintf( msgout, "  version  : v%i.%i\n", vmaj, vmin );
+	fprintf( msgout, "  packed   : %s\n", pmp_human_size( sz ).c_str() );
+	fprintf( msgout, "  original : %s\n", pmp_human_size( (long long) rawlen ).c_str() );
+	fprintf( msgout, "  method   : %s (packMP2 v%s)\n", method, packmp2_version() );
+	fprintf( msgout, "  format   : %s\n", l2_format_label( mpeg, layer ) );
+	fprintf( msgout, "  frames   : %lli\n", frames );
+	fprintf( msgout, "  channels : %i (%s)\n", ( channels == MP3_MONO ) ? 1 : 2, l2_channel_label( channels ) );
+	fprintf( msgout, "  rate     : %i Hz\n", samplerate );
+	if ( !vbr ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", bitrate );
+	else        fprintf( msgout, "  bitrate  : VBR / not global\n" );
+
+	pmpfilesize = (int) sz;
+	mp3filesize = 0;
 	return true;
 }
 #endif
