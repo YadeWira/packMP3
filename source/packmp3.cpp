@@ -1508,20 +1508,21 @@ INTERN inline const char* get_status( bool (*function)() )
 INTERN void show_help( void )
 {
 	fprintf( msgout, "\n" );
-	fprintf( msgout, "%s -- lossless MP3 compression. Typical reduction: ~16%%.\n", appname );
-	fprintf( msgout, "Compresses MPEG audio (MP3) files to .pm3 archives and decompresses\n" );
-	fprintf( msgout, "them back, with bit-for-bit identical reconstruction.\n" );
+	fprintf( msgout, "%s -- lossless MPEG audio compression (MP3 + MP2). Typical reduction: ~16%%.\n", appname );
+	fprintf( msgout, "Compresses MP3/MP2 files to .pm3 archives and decompresses them back,\n" );
+	fprintf( msgout, "with bit-for-bit identical reconstruction. Embedded ID3v2 JPEG cover art\n" );
+	fprintf( msgout, "is losslessly recompressed automatically, no flag needed.\n" );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Website: %s\n", website );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Usage: %s <subcommand> [switches] [filename(s)]\n", appname );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Subcommands:\n" );
-	fprintf( msgout, " a         compress only: process MP3 files, skip .pm3\n" );
-	fprintf( msgout, " x         decompress only: process .pm3 files, skip MP3\n" );
+	fprintf( msgout, " a         compress only: process MP3/MP2 files, skip .pm3\n" );
+	fprintf( msgout, " x         decompress only: process .pm3 files, skip MP3/MP2\n" );
 	fprintf( msgout, " mix       mixed mode: auto-detect (warns if both directions used)\n" );
-	fprintf( msgout, " list      list .pm3 file info without decompressing\n" );
-	fprintf( msgout, " stats     show MP3 file info (size, layer, channels) without compressing\n" );
+	fprintf( msgout, " list      list .pm3 file info (MP3 or MP2) without decompressing\n" );
+	fprintf( msgout, " stats     show source file info (size, layer, channels) without compressing\n" );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Switches:\n" );
 	fprintf( msgout, "\n" );

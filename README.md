@@ -1,9 +1,12 @@
 # packMP3
 
-packMP3 is a lossless compression program for MP3 (MPEG Audio Layer III)
-files. It re-encodes the Huffman-coded spectral data with an adaptive
-arithmetic coder and reconstructs the exact original MP3, bit for bit.
-Typical file size reduction: **~11-16%**.
+packMP3 is a lossless compression program for MPEG audio files —
+MP3 (Layer III) and, as of v3.0, MP2 (Layer II). It reconstructs the
+exact original file, bit for bit. MP3 is re-encoded with an adaptive
+arithmetic coder (typical reduction: **~11-16%**); MP2 is handled by
+the sibling [packMP2](https://github.com/YadeWira/packMP2) library.
+Embedded ID3v2 cover art (JPEG) is losslessly recompressed too, via the
+sibling [packJPG](https://github.com/YadeWira/packJPG) library.
 
 **Supported platforms:** Linux x64, Windows 7 SP1+ (x64 and x86).
 
@@ -35,16 +38,19 @@ packMP3 <subcommand> [switches] [filename(s)]
 
 | Subcommand | Description |
 |---|---|
-| `a` | compress MP3 files to `.pm3` (archive) |
-| `x` | decompress `.pm3` files back to MP3 (extract) |
+| `a` | compress MP3/MP2 files to `.pm3` (archive) |
+| `x` | decompress `.pm3` files back to MP3/MP2 (extract) |
 | `mix` | auto-detect and process both directions (use with caution) |
-| `list` | display info about `.pm3` files without decompressing |
-| `stats` | show MP3 file info (size, MPEG version, channels, bitrate) without compressing |
+| `list` | display info about `.pm3` archives (MP3 or MP2) without decompressing |
+| `stats` | show source file info (size, MPEG layer/version, channels, bitrate) without compressing |
 
-packMP3 recognizes file types by content, not extension. Files that are
-neither MP3 nor `.pm3` are silently skipped. Wildcards (`*.mp3`, `*.*`)
-and drag-and-drop work; on Windows, wildcard expansion is handled
-internally because `cmd.exe` doesn't expand them.
+packMP3 recognizes file types by content, not extension. MP3 goes to
+the `.pm3` format (`"MS"`/`"MK"` magic); MP2 goes to a separate `.pm3`
+container (`"M2"` magic) so the two never collide. Files that are
+neither a recognized MPEG audio format nor a `.pm3` archive are
+silently skipped. Wildcards (`*.mp3`, `*.*`) and drag-and-drop work;
+on Windows, wildcard expansion is handled internally because `cmd.exe`
+doesn't expand them.
 
 In default mode files are never overwritten — packMP3 appends
 underscores to make a fresh name. Pass `-o` to overwrite. Directories
@@ -89,7 +95,45 @@ $ packMP3 list -np song.pm3
   bitrate  : 192 kbps (CBR)
 ```
 
-The `chunks` line only appears for archives made with `-k` > 1.
+The `chunks` line only appears for archives made with `-k` > 1 (MP3
+archives only — chunking doesn't apply to MP2).
+
+`list`/`stats` also work on MP2 files and their `.pm3` archives (the
+sync-scan is header-only, no full decode):
+
+```
+$ packMP3 stats -np song.mp2
+  size     : 1.20 MB
+  format   : MPEG-1 Layer II
+  frames   : 3266
+  channels : 2 (joint stereo)
+  rate     : 48000 Hz
+  bitrate  : 128 kbps (CBR)
+
+$ packMP3 list -np song.pm3
+  version  : v3.0
+  packed   : 929.3 KB
+  original : 1.20 MB
+  method   : packMP2 (zstd/zpaq) (packMP2 v0.5.0)
+  format   : MPEG-1 Layer II
+  frames   : 3266
+  channels : 2 (joint stereo)
+  rate     : 48000 Hz
+  bitrate  : 128 kbps (CBR)
+```
+
+### Embedded cover art
+
+If an MP3's ID3v2 tag carries a JPEG cover (the common case for
+tagged music files), packMP3 automatically recompresses it losslessly
+via [packJPG](https://github.com/YadeWira/packJPG) instead of storing
+it as generic bytes — shrinking files with high-resolution artwork
+further, with no extra flag needed. It's self-verifying (the
+recompressed image is decompressed and byte-compared before ever being
+used) and silently falls back to the ordinary generic encoding for
+anything unusual — non-JPEG covers (PNG, etc.), unsynchronised tags,
+multiple pictures, or any parsing surprise. `-d` (discard meta-info)
+skips this entirely along with the rest of the tag.
 
 
 ## Command-line switches
@@ -254,6 +298,10 @@ library APIs, which do expose thread/batch control — closing this gap
 is a future decision for packMP3, not a blocker for the current
 release.
 
+MP2 support and embedded cover-art recompression (new in v3.0) are also
+CLI-only — the library only ever handles MP3 (Layer III) `.pm3`
+archives, same scope as the threading gap above.
+
 ### Windows DLL and `thread_local`
 
 The DLL is built with mingw's default (win32) thread model and has been
@@ -268,18 +316,23 @@ this with the POSIX thread model mingw toolchain.
 
 ## Known limitations
 
-packMP3 is an MP3-only compressor; other file types are silently
-skipped.
+packMP3 compresses MPEG audio; other file types are silently skipped.
 
 MP3 may stand for three different audio file types: MPEG-1, MPEG-2 and
 MPEG-2.5 Audio Layer III. As of v2.0, packMP3 compresses all three
 (mono, stereo, joint stereo and dual channel; constant and variable
 bitrate).
 
-The MPEG audio family also includes Layer I (`.mp1`) and Layer II
-(`.mp2`), which use a completely different, non-Huffman coding scheme.
-packMP3 has a separate codec for them, but it is currently **disabled**
-— those files are rejected cleanly with a message and never damaged.
+As of v3.0, MP2 (MPEG Audio Layer II) is also supported, backed by the
+[packMP2](https://github.com/YadeWira/packMP2) library — same `a`/`x`/
+`list`/`stats`/`-ver` workflow, separate `.pm3` container (`"M2"`
+magic) so it never collides with the MP3 format.
+
+MP1 (MPEG Audio Layer I) is **not** supported and is rejected cleanly
+with a message — Layer I has a meaningfully different frame structure
+from Layer II (different frame-length formula, no SCFSI, different
+bit-allocation tables) and the packMP2 backend is structurally
+Layer-II-only. Files are never damaged; they're just skipped.
 
 Some rare MP3 encodings are rejected (never damaged) rather than
 compressed: free-format bitrate, and frames mixing long and short
@@ -289,10 +342,13 @@ packMP3 has low error tolerance — MP3 files might not work with
 packMP3 even if they play fine in audio software. `-p` increases error
 tolerance and compatibility (see the `-p`/`-d`/`-ver` trade-off above).
 
-Compressed archives are not compatible across packMP3 major versions —
-v2.0 changed the on-disk format, so v1.x `.pmp` files cannot be decoded
-by v2.0 and vice versa. You'll get a clean error message rather than
-garbage output if you try.
+Compressed archives are not always compatible across packMP3 major
+versions — v2.0 changed the on-disk format, so v1.x `.pmp` files
+cannot be decoded by v2.0 and vice versa. You'll get a clean error
+message rather than garbage output if you try. v3.0 is an exception:
+its format additions (MP2, embedded cover-art recompression) are
+purely additive and version-gated, so v2.0/v2.1 `.pm3` archives still
+decode correctly on v3.0.
 
 On Windows, dragging too many files at once may show a
 missing-privileges error; use the command line instead.
@@ -338,6 +394,13 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
+* **v3.0 (LTS)** — MP2 (MPEG Audio Layer II) support via the
+  [packMP2](https://github.com/YadeWira/packMP2) library (`a`/`x`/
+  `list`/`stats`/`-ver`, separate `"M2"` container); losslessly
+  recompresses embedded ID3v2 JPEG cover art via
+  [packJPG](https://github.com/YadeWira/packJPG); MP1 explicitly
+  rejected (not supported, see Known limitations); format additions are
+  backward-compatible with v2.0/v2.1 archives.
 * **v2.0** — full MP3 family (MPEG-1/2/2.5 Layer III, all channel
   modes, CBR/VBR), new `.pm3` extension, `-k` intra-file parallel
   chunking, retuned entropy models, link-time optimization and an
