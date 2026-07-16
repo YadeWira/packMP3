@@ -3,7 +3,7 @@
    For slim build (zstd only, no zpaq): compile with -DPACKMP2_SLIM.
 
    VENDORED HEADER — pinned copy from https://github.com/YadeWira/packMP2
-   (local snapshot as of commit e91bb6a). The prebuilt libpackmp2.a this
+   (local snapshot as of commit a3a62f4). The prebuilt libpackmp2.a this
    header pairs with is a local build artifact, not committed (see .gitignore
    *.a rule) -- run `make lib` in the packMP2 repo and copy libpackmp2.a into
    this directory to build packMP3 from source. Once both repos are stable
@@ -48,12 +48,15 @@ extern "C" {
 
 /* ---- compression levels (controls method complexity, higher = better ratio) ----
    zstd: level maps directly to zstd level clamped 1..6 (dict does heavy lifting).
-   zpaq: 1=LZ77-fast  2=LZ77-longer  3=BWT+mix  4=BWT+ISSE+mix  5=full-CM. */
-#define PACKMP2_LEVEL_STORE   0   /* store verbatim (no compression)              */
-#define PACKMP2_LEVEL_FAST    1   /* zstd level 1  /  zpaq LZ77-fast              */
-#define PACKMP2_LEVEL_DEFAULT 3   /* zstd level 1  /  zpaq BWT+mix   (best speed) */
-#define PACKMP2_LEVEL_GOOD    4   /* zstd level 3  /  zpaq BWT+ISSE+mix (balance) */
-#define PACKMP2_LEVEL_BEST    5   /* zstd level 6  /  zpaq full CM      (max)     */
+   zpaq v0.5: custom-tuned ZPAQL methods optimized for um2 data.
+     1=LZ77-fast  2=LZ77-longer  3=BWT+1ISSE+mix (fastest)
+     4=BWT+c256+2ISSE+mix (best speed/ratio)
+     5=BWT+c256+2ISSE+MATCH+sparse+mm16+SSE (matches lpaq8, 17% faster than built-in CM) */
+#define PACKMP2_LEVEL_STORE   0   /* store verbatim (no compression)                     */
+#define PACKMP2_LEVEL_FAST    1   /* zstd level 1  /  zpaq LZ77-fast                     */
+#define PACKMP2_LEVEL_DEFAULT 3   /* zstd level 1  /  zpaq BWT+ISSE+mix     (best speed) */
+#define PACKMP2_LEVEL_GOOD    4   /* zstd level 3  /  zpaq BWT+c256+ISSE+mix (balance)   */
+#define PACKMP2_LEVEL_BEST    5   /* zstd level 6  /  zpaq full custom CM    (max)       */
 
 /* ---- never-expand policy ---- */
 #define PACKMP2_NEVER_EXPAND 1   /* if compressed >= original, store verbatim */

@@ -7441,6 +7441,11 @@ INTERN bool l2_compress( void )
 	str_in->read( d, 1, fsize );
 
 	packmp2_opts opts = packmp2_opts_default();
+	// v0.5 retuned level 4 (BWT+c256+2ISSE+mix) to +0.58% ratio over the old
+	// level 4 for only +27ms -- effectively free, so it's the new default
+	// here. Level 5 (matches lpaq8's ratio, ~5x slower) stays opt-in-only
+	// for a future release, not wired to any packMP3 flag yet.
+	opts.level = PACKMP2_LEVEL_GOOD;
 	char pmsg[ 256 ] = {0};
 	unsigned char* out = NULL; size_t outlen = 0;
 	int rc;
