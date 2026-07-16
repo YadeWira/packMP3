@@ -34,6 +34,21 @@
 #include "huffmp3.h"
 #include "huffmp3tbl.h"
 #include "vendor/packmp2/packmp2.h"	// Layer I/II backend (sibling project, see packMP2)
+#if !defined(BUILD_LIB) && !defined(BUILD_DLL)
+// Embedded ID3v2 cover-art (APIC) recompression, see packJPG. CLI-only --
+// same scope precedent as Layer I/II (packmp2 above): the library API
+// never handles M2 archives either. Guarded on BUILD_DLL too, not just
+// BUILD_LIB: this include sits *before* the "#if defined BUILD_DLL #define
+// BUILD_LIB" cascade a few lines down, so BUILD_LIB isn't set yet here for
+// the `so`/`dll-x64`/`dll-x86` targets (which pass -DBUILD_DLL, not
+// -DBUILD_LIB, as their command-line flag) -- checking BUILD_LIB alone at
+// this point would miss them. Also a hard requirement, not just a scope
+// choice: packjpglib.h's EXPORT macro takes the __declspec(dllexport)
+// branch whenever BUILD_DLL is defined, and __declspec is not recognized
+// by native (non-mingw) g++, so `so` fails to compile outright without
+// this guard -- confirmed empirically.
+#include "vendor/packjpg/packjpglib.h"
+#endif
 
 #if defined BUILD_DLL // define BUILD_LIB from the compiler options if you want to compile a DLL!
 	#define BUILD_LIB
@@ -153,6 +168,16 @@ INTERN inline bool pmp_decode_id3( aricoder* dec );
 #else
 INTERN inline int pmp_store_data( iostream* str, unsigned char* data, int size );
 INTERN inline int pmp_unstore_data( iostream* str, unsigned char** data );
+#endif
+#if !defined(BUILD_LIB)
+// embedded ID3v2 cover-art (APIC) recompression via packJPG -- see the
+// implementation comment above apic_try_recompress for the full design.
+// encode: detect+recompress; on success returns a freshly allocated modified
+// copy of data_before (caller frees) and sets apic_present/offset/lens.
+INTERN bool apic_try_recompress( unsigned char** modified, int* modified_size );
+// decode: if apic_present, splices the original JPEG back into data_before
+// (replaces data_before/data_before_size with a freshly allocated buffer).
+INTERN bool apic_reconstruct( void );
 #endif
 INTERN inline bool pmp_encode_padding( aricoder* enc );
 INTERN inline bool pmp_decode_padding( aricoder* dec );
@@ -377,8 +402,13 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 	global variables: info about program
 	----------------------------------------------- */
 
-INTERN const unsigned char appversion = 20;
+INTERN const unsigned char appversion = 21;
 INTERN const unsigned char appversion_legacy_min = 20; // v2.0 changed the entropy models; no backward-compatible payload
+// v2.1 adds an optional APIC (embedded cover art) recompression flag/record
+// (see pmp_write_header/pmp_read_header) -- purely additive and gated on
+// pmp_archive_version, so v2.0 archives (still >= appversion_legacy_min)
+// keep decoding unaffected. Mirrors the existing v1.3 MPEG-version-bits
+// precedent, not the v2.0 entropy-model break.
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
@@ -400,7 +430,29 @@ INTERN const char   l2_magic[]  = { 'M', '2' };	// separate container for Layer 
 // call must be serialized process-wide until packMP2 ships a thread-safe
 // (per-call heap-alloc) engine.
 INTERN std::mutex l2_pmp2_mutex;
+
+// Embedded ID3v2 cover-art (APIC) recompression via packJPG. packJPG's own
+// thread-safety for concurrent pjglib_init_streams/pjglib_convert_stream2mem
+// pairs (independent calls, different threads) is unverified -- its API
+// shape (no handle threaded between the two calls) means state lives
+// somewhere outside caller control, and static inspection of the vendored
+// lib couldn't prove it either way. Unlike a wrong-output bug, a race here
+// could mean memory corruption inside pjglib that a round-trip check can't
+// catch after the fact -- serialize unconditionally rather than assume.
+INTERN std::mutex pjg_mutex;
 #endif
+
+// Recipe for splicing a recompressed cover back into data_before on decode
+// (see pmp_write_header/pmp_read_header and apic_try_recompress/
+// apic_reconstruct further below). Declared unconditionally (pmp_write_header/
+// pmp_read_header read/set apic_present in every build) but only ever set
+// true by apic_try_recompress/apic_reconstruct, which are CLI-only -- lib
+// builds simply never produce or consume APIC-recompressed archives, same
+// scope precedent as Layer I/II.
+THREAD_LOCAL bool apic_present  = false;
+THREAD_LOCAL int  apic_offset   = 0;	// byte offset within data_before of the blob
+THREAD_LOCAL int  apic_orig_len = 0;	// original JPEG length
+THREAD_LOCAL int  apic_pjg_len  = 0;	// stored (packJPG-compressed) length
 INTERN const char   pmc_magic[] = { 'M', 'K' };	// chunked container: K independent "MS" sub-streams
 #define MAX_CHUNKS       64				// upper bound on -k
 #define MIN_FRAMES_CHUNK 16				// don't split below this many frames per chunk
@@ -2044,6 +2096,12 @@ INTERN bool reset_buffers( void )
 	data_before_size = 0;
 	data_after_size = 0;
 	unmute_data_size = 0;
+	// stale apic_* would otherwise leak into the next file processed on this
+	// thread (e.g. a file with no ID3 tag at all right after one that had a
+	// recompressed cover) -- pmp_write_header/uncompress_pmp both read these
+	// unconditionally, so they must not carry over.
+	apic_present = false;
+	apic_offset = apic_orig_len = apic_pjg_len = 0;
 	if ( gg_context[0] != NULL ) free ( gg_context[0] );
 	if ( gg_context[1] != NULL ) free ( gg_context[1] );
 	gg_context[0] = NULL;
@@ -2493,28 +2551,54 @@ INTERN bool compress_mp3( void )
 	}
 	
 	
+	// --- try recompressing an embedded cover (sets apic_present et al, must
+	// happen before pmp_write_header so the header bit reflects it) ---
+
+	#if !defined(BUILD_LIB) && !defined(STORE_ID3)
+	unsigned char* apic_modified = NULL; int apic_modified_size = 0;
+	if ( data_before_size > 0 )
+		apic_try_recompress( &apic_modified, &apic_modified_size );
+	#endif
+
+
 	// --- write PMP header with some basic info ---
-	
+
 	// PMP magic number & version byte
 	str_out->write( (void*) pmp_magic, 1, 2 );
 	str_out->write( (void*) &appversion, 1, 1 );
-	
+
 	// PMP header data
 	if ( !pmp_write_header( str_out ) ) return false;
-	
-	
+
+	#if !defined(BUILD_LIB) && !defined(STORE_ID3)
+	// v2.1: raw recipe record (offset/orig_len/pjg_len), immediately after
+	// the header and before the bad-first-frames unmute block -- order is
+	// significant and must match uncompress_pmp exactly.
+	if ( apic_present ) {
+		unsigned char rec[12];
+		rec[0]  = (unsigned char)( apic_offset        ); rec[1]  = (unsigned char)( apic_offset   >>  8 );
+		rec[2]  = (unsigned char)( apic_offset   >> 16 ); rec[3]  = (unsigned char)( apic_offset   >> 24 );
+		rec[4]  = (unsigned char)( apic_orig_len      ); rec[5]  = (unsigned char)( apic_orig_len >>  8 );
+		rec[6]  = (unsigned char)( apic_orig_len >> 16 ); rec[7]  = (unsigned char)( apic_orig_len >> 24 );
+		rec[8]  = (unsigned char)( apic_pjg_len       ); rec[9]  = (unsigned char)( apic_pjg_len  >>  8 );
+		rec[10] = (unsigned char)( apic_pjg_len  >> 16 ); rec[11] = (unsigned char)( apic_pjg_len  >> 24 );
+		str_out->write( (void*) rec, 1, 12 );
+	}
+	#endif
+
+
 	#if defined( STORE_ID3 )
 	// --- store ID3 data instead of compressing ---
-	
+
 	if ( data_before_size > 0 )
 		if ( pmp_store_data( str_out, data_before, data_before_size ) != data_before_size ) return false;
 	if ( data_after_size > 0 )
 		if ( pmp_store_data( str_out, data_after, data_after_size ) != data_after_size ) return false;
 	#endif
-	
-	
+
+
 	// --- mute frames, store fix data (only if broken) ---
-	
+
 	if ( n_bad_first > 0 ) {
 		// mute all frames up to last bad
 		for ( mp3Frame* frame = firstframe; n_bad_first > 0; frame = frame->next, n_bad_first-- )
@@ -2522,17 +2606,28 @@ INTERN bool compress_mp3( void )
 		// store fix data
 		if ( !pmp_store_unmute_data( str_out ) ) return false;
 	}
-	
-	
+
+
 	// --- actual compressed data writing starts here ---
-	
+
 	// init arithmetic compression
 	encoder = new aricoder( str_out, 1 );
-	
+
 	#if !defined( STORE_ID3 )
-	// id3 tags / other tags / garbage
-	if ( ( data_before_size > 0 ) || ( data_after_size > 0 ) )
-		if ( !pmp_encode_id3( encoder ) ) return false;
+	// id3 tags / other tags / garbage -- if a cover was recompressed, encode
+	// the modified (shrunk) copy instead of the original data_before; swap
+	// back immediately after so nothing downstream ever sees the swap.
+	if ( ( data_before_size > 0 ) || ( data_after_size > 0 ) ) {
+		#if !defined(BUILD_LIB)
+		unsigned char* real_data_before = data_before; int real_data_before_size = data_before_size;
+		if ( apic_present ) { data_before = apic_modified; data_before_size = apic_modified_size; }
+		#endif
+		bool id3_ok = pmp_encode_id3( encoder );
+		#if !defined(BUILD_LIB)
+		if ( apic_present ) { free( data_before ); data_before = real_data_before; data_before_size = real_data_before_size; }
+		#endif
+		if ( !id3_ok ) return false;
+	}
 	#endif
 
 	// frame header data
@@ -2626,11 +2721,27 @@ INTERN bool uncompress_pmp( void )
 
 	// read and analyse header
 	if ( !pmp_read_header( str_in ) ) return false;
-	
-	
+
+	#if !defined(BUILD_LIB) && !defined(STORE_ID3)
+	// v2.1: raw recipe record, immediately after the header and before the
+	// bad-first-frames unmute block -- must match compress_mp3 exactly.
+	if ( apic_present ) {
+		unsigned char rec[12];
+		if ( str_in->read( rec, 1, 12 ) != 12 ) {
+			snprintf( errormessage, MSG_SIZE, "truncated archive (APIC record)" );
+			errorlevel = 2;
+			return false;
+		}
+		apic_offset   = (int)( rec[0] | (rec[1]<<8) | (rec[2]<<16) | (rec[3]<<24) );
+		apic_orig_len = (int)( rec[4] | (rec[5]<<8) | (rec[6]<<16) | (rec[7]<<24) );
+		apic_pjg_len  = (int)( rec[8] | (rec[9]<<8) | (rec[10]<<16) | (rec[11]<<24) );
+	}
+	#endif
+
+
 	#if defined( STORE_ID3 )
 	// --- unstore ID3 data ---
-	
+
 	if ( data_before_size > 0 ) {
 		data_before_size = pmp_unstore_data( str_in, &data_before );
 		if ( data_before_size <= 0 ) return false;
@@ -2640,8 +2751,8 @@ INTERN bool uncompress_pmp( void )
 		if ( data_after_size <= 0 ) return false;
 	}
 	#endif
-	
-	
+
+
 	// --- unstore unmute fix data for later use (only if needed) ---
 	
 	// unstore fix data
@@ -2660,8 +2771,13 @@ INTERN bool uncompress_pmp( void )
 	// id3 tags / other tags / garbage
 	if ( ( data_before_size > 0 ) || ( data_after_size > 0 ) )
 		if ( !pmp_decode_id3( decoder ) ) return false;
+	#if !defined(BUILD_LIB)
+	// splice the original JPEG back in, undoing apic_try_recompress
+	if ( apic_present )
+		if ( !apic_reconstruct() ) return false;
 	#endif
-	
+	#endif
+
 	// frame header data
 	if ( i_padding != 0 ) // padding bits
 		if ( !pmp_decode_padding( decoder ) ) return false;
@@ -4018,6 +4134,10 @@ INTERN inline bool pmp_write_header( iostream* str )
 	header[3] |= ( (i_bit_res==0) ? 0 : 1 ) << 7; // bit reservoir
 	header[3] |= ( (i_sb_diff==0) ? 0 : 1 ) << 6; // special block diffs
 	header[3] |= ( (n_bad_first>0) ? 1 : 0 ) << 5; // bad first frames
+	// v2.1: embedded cover-art (APIC) recompression flag. Old (< v2.1)
+	// readers ignore bit 4; v2.1+ reads it and, if set, an extra raw record
+	// right after this header (see pmp_read_header/uncompress_pmp).
+	header[3] |= ( apic_present ? 1 : 0 ) << 4; // APIC recompressed
 	// v1.3: MPEG version (2 bits) in the previously-free low bits, so MPEG-2/2.5
 	// Layer III can be reconstructed. Old v1.1/v1.2 readers ignore byte 3 low
 	// bits; v1.3+ reads them only when the archive version says they exist.
@@ -4091,7 +4211,10 @@ INTERN inline bool pmp_read_header( iostream* str )
 	i_bit_res		= -((header[3]>>7)&0x1);
 	i_sb_diff		=  ((header[3]>>6)&0x1);
 	n_bad_first		=  (header[3]>>5)&0x1;
-	
+	// v2.1+ archives may carry a recompressed cover-art record right after
+	// this header; older readers/archives simply never see the bit set.
+	apic_present	= ( pmp_archive_version >= 21 ) && ( (header[3]>>4)&0x1 );
+
 	// set nframes known i_variables.
 	// v1.3+ archives store the MPEG version in byte 3 low bits; older archives
 	// (v1.1/v1.2) only ever held MPEG-1, so default to that for them.
@@ -4291,7 +4414,257 @@ INTERN inline int pmp_unstore_data( iostream* str, unsigned char** data )
 	}
 	
 	
-	return size;	
+	return size;
+}
+#endif
+
+
+#if !defined(BUILD_LIB)
+/* ===========================================================================
+	Embedded ID3v2 cover-art (APIC) recompression via packJPG.
+
+	Purely a storage optimization on top of the existing generic byte-model
+	id3 encoding above: if data_before (the ID3v2 tag) contains exactly one
+	qualifying JPEG cover, we replace those image bytes with a smaller
+	packJPG blob before handing the buffer to pmp_encode_id3 -- everything
+	else in the tag (other frames, text metadata) is untouched and still
+	flows through the same generic model as always. Any parsing surprise
+	anywhere just means "don't recompress this one", never "produce wrong
+	output" -- see the self-verify round-trip in apic_try_recompress.
+   =========================================================================== */
+
+// Length (bytes, including terminator) of a text string at p within a
+// buffer of `remain` bytes, per the ID3v2 text-encoding byte (0=Latin1,
+// 1=UTF16+BOM, 2=UTF16BE -> double 0x00 terminator, 2-byte aligned strides;
+// 3=UTF8, and 0=Latin1 -> single 0x00). Returns -1 if not found in `remain`.
+INTERN int id3_skip_text( const unsigned char* p, int remain, int encoding )
+{
+	if ( encoding == 1 || encoding == 2 ) {
+		int i = 0;
+		for ( ; i + 1 < remain; i += 2 )
+			if ( p[i] == 0 && p[i+1] == 0 ) return i + 2;
+		return -1;
+	}
+	for ( int i = 0; i < remain; i++ )
+		if ( p[i] == 0 ) return i + 1;
+	return -1;
+}
+
+// Case-insensitive ASCII compare, exactly len bytes (no null-termination
+// assumed on `a`, which points into the raw tag buffer).
+INTERN bool id3_ieq( const unsigned char* a, const char* b, int len )
+{
+	for ( int i = 0; i < len; i++ ) {
+		unsigned char ca = a[i], cb = (unsigned char) b[i];
+		if ( ca >= 'A' && ca <= 'Z' ) ca += 32;
+		if ( cb >= 'A' && cb <= 'Z' ) cb += 32;
+		if ( ca != cb ) return false;
+	}
+	return true;
+}
+
+// Finds a single qualifying JPEG cover frame in an ID3v2 tag (`tag`,
+// `tag_size` bytes -- i.e. data_before). On success returns true with
+// *img_off/*img_len set to the byte range of the raw JPEG data within `tag`.
+// Bails (false) on anything outside the narrow, safe common case: any ID3v2
+// major version other than 2/3/4, tag-level unsynchronisation, an extended
+// header or footer (not accounted for in this frame walk), or a frame whose
+// declared size would run past the tag body (real structural inconsistency
+// -- distrust the whole parse, not just that frame). A frame with nonzero
+// flags, wrong MIME/format, or non-JPEG payload is simply skipped, not a
+// bail -- only the first frame that fully qualifies is ever used, everything
+// else (including any other APIC/PIC frames) is left untouched.
+INTERN bool id3_find_apic_jpeg( const unsigned char* tag, int tag_size, int* img_off, int* img_len )
+{
+	if ( tag_size < 10 || memcmp( tag, "ID3", 3 ) != 0 ) return false;
+	int major = tag[3];
+	if ( major != 2 && major != 3 && major != 4 ) return false;
+	unsigned char tagflags = tag[5];
+	if ( tagflags & 0x80 ) return false;              // unsynchronisation -- bail
+	if ( major >= 3 && ( tagflags & 0x40 ) ) return false; // extended header -- bail
+	if ( major == 4 && ( tagflags & 0x10 ) ) return false; // footer -- bail
+
+	unsigned int body_size = ( (unsigned int)(tag[6]&0x7F) << 21 ) | ( (unsigned int)(tag[7]&0x7F) << 14 )
+	                        | ( (unsigned int)(tag[8]&0x7F) <<  7 ) | (unsigned int)(tag[9]&0x7F);
+	if ( body_size == 0 || 10 + (long long) body_size > tag_size ) return false;
+	int end = 10 + (int) body_size;
+
+	int id_len   = ( major == 2 ) ? 3 : 4;
+	int size_len = ( major == 2 ) ? 3 : 4;
+	int flag_len = ( major == 2 ) ? 0 : 2;
+	int hdr_len  = id_len + size_len + flag_len;
+
+	int pos = 10;
+	while ( pos + hdr_len <= end ) {
+		if ( tag[pos] == 0 ) break; // padding reached
+
+		unsigned int fsize;
+		if ( major == 2 )
+			fsize = ( (unsigned int)tag[pos+3] << 16 ) | ( (unsigned int)tag[pos+4] << 8 ) | (unsigned int)tag[pos+5];
+		else if ( major == 3 )
+			fsize = ( (unsigned int)tag[pos+4] << 24 ) | ( (unsigned int)tag[pos+5] << 16 )
+			      | ( (unsigned int)tag[pos+6] <<  8 ) | (unsigned int)tag[pos+7];
+		else // major == 4, syncsafe
+			fsize = ( (unsigned int)(tag[pos+4]&0x7F) << 21 ) | ( (unsigned int)(tag[pos+5]&0x7F) << 14 )
+			      | ( (unsigned int)(tag[pos+6]&0x7F) <<  7 ) | (unsigned int)(tag[pos+7]&0x7F);
+
+		int frame_body_off = pos + hdr_len;
+		if ( (long long) frame_body_off + fsize > end ) return false; // structurally broken -- distrust whole tag
+
+		bool is_pic = ( major == 2 ) ? ( memcmp( tag+pos, "PIC", 3 ) == 0 )
+		                             : ( memcmp( tag+pos, "APIC", 4 ) == 0 );
+		if ( is_pic && fsize > 0 ) {
+			bool skip_this_frame = false;
+			if ( flag_len == 2 ) {
+				unsigned int fflags = ( (unsigned int)tag[pos+id_len+size_len] << 8 ) | tag[pos+id_len+size_len+1];
+				if ( fflags != 0 ) skip_this_frame = true; // compressed/encrypted/grouped/etc -- skip, don't bail
+			}
+			if ( !skip_this_frame ) {
+				const unsigned char* body = tag + frame_body_off;
+				int blen = (int) fsize;
+				int bp = 0;
+				if ( blen >= 1 ) {
+					int encoding = body[0];
+					bp = 1;
+					if ( encoding >= 0 && encoding <= 3 ) {
+						bool is_jpeg_type = false;
+						bool fmt_ok = true;
+						if ( major == 2 ) {
+							if ( bp + 3 <= blen ) { is_jpeg_type = id3_ieq( body+bp, "JPG", 3 ); bp += 3; }
+							else fmt_ok = false;
+						} else {
+							int mime_len = id3_skip_text( body+bp, blen-bp, 0 ); // MIME: always single-null Latin1
+							if ( mime_len < 0 ) fmt_ok = false;
+							else {
+								int mstr_len = mime_len - 1;
+								is_jpeg_type = ( mstr_len == 10 && id3_ieq( body+bp, "image/jpeg", 10 ) )
+								            || ( mstr_len == 9  && id3_ieq( body+bp, "image/jpg", 9 ) );
+								bp += mime_len;
+							}
+						}
+						if ( fmt_ok && bp + 1 <= blen ) {
+							bp += 1; // picture-type byte
+							int desc_len = id3_skip_text( body+bp, blen-bp, encoding );
+							if ( desc_len >= 0 ) {
+								bp += desc_len;
+								int imglen_here = blen - bp;
+								if ( is_jpeg_type && imglen_here >= 4
+								     && body[bp] == 0xFF && body[bp+1] == 0xD8 ) {
+									*img_off = frame_body_off + bp;
+									*img_len = imglen_here;
+									return true; // first qualifying frame wins, stop here
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		pos = frame_body_off + fsize;
+	}
+	return false;
+}
+
+// Encode side: on success, allocates *modified (caller frees with free()) --
+// a copy of data_before with the found JPEG replaced by a smaller packJPG
+// blob -- and sets apic_present/apic_offset/apic_orig_len/apic_pjg_len.
+// Never modifies data_before itself. Leaves apic_present false and
+// *modified/*modified_size untouched (NULL/0) on any failure to recompress.
+INTERN bool apic_try_recompress( unsigned char** modified, int* modified_size )
+{
+	int img_off, img_len;
+	if ( !id3_find_apic_jpeg( data_before, data_before_size, &img_off, &img_len ) ) return false;
+
+	unsigned char* pjg_out = NULL; unsigned int pjg_len = 0;
+	char msg[ PJG_MSG_SIZE ] = {0};
+	bool ok;
+	{
+		std::lock_guard<std::mutex> lk( pjg_mutex );
+		pjglib_init_streams( (void*)( data_before + img_off ), 1, img_len, NULL, 1 );
+		ok = pjglib_convert_stream2mem( &pjg_out, &pjg_len, msg );
+	}
+	if ( !ok || pjg_out == NULL || (int) pjg_len >= img_len ) {
+		if ( pjg_out != NULL ) free( pjg_out );
+		return false; // packJPG failed, or didn't actually shrink it -- not worth it
+	}
+
+	// self-verify: decompress right back and compare bit-for-bit before
+	// ever committing to using this -- never trust a single conversion.
+	unsigned char* verify_out = NULL; unsigned int verify_len = 0;
+	bool vok;
+	{
+		std::lock_guard<std::mutex> lk( pjg_mutex );
+		pjglib_init_streams( (void*) pjg_out, 1, pjg_len, NULL, 1 );
+		vok = pjglib_convert_stream2mem( &verify_out, &verify_len, msg );
+	}
+	bool roundtrip_ok = vok && verify_out != NULL && verify_len == (unsigned int) img_len
+	                  && memcmp( verify_out, data_before + img_off, img_len ) == 0;
+	if ( verify_out != NULL ) free( verify_out );
+	if ( !roundtrip_ok ) { free( pjg_out ); return false; }
+
+	int new_size = data_before_size - img_len + (int) pjg_len;
+	unsigned char* buf = (unsigned char*) malloc( new_size > 0 ? new_size : 1 );
+	if ( buf == NULL ) { free( pjg_out ); return false; }
+	memcpy( buf, data_before, img_off );
+	memcpy( buf + img_off, pjg_out, pjg_len );
+	memcpy( buf + img_off + pjg_len, data_before + img_off + img_len, data_before_size - img_off - img_len );
+	free( pjg_out );
+
+	apic_present  = true;
+	apic_offset   = img_off;
+	apic_orig_len = img_len;
+	apic_pjg_len  = (int) pjg_len;
+	*modified = buf;
+	*modified_size = new_size;
+	return true;
+}
+
+// Decode side: reverses apic_try_recompress. Replaces data_before (and
+// data_before_size) with a freshly allocated buffer where the packJPG blob
+// at apic_offset is expanded back to the original JPEG bytes. Bounds-checks
+// the (potentially corrupt/tampered) recipe fields before touching memory.
+INTERN bool apic_reconstruct( void )
+{
+	if ( apic_offset < 0 || apic_pjg_len < 0 || apic_orig_len < 0
+	     || (long long) apic_offset + apic_pjg_len > data_before_size ) {
+		snprintf( errormessage, MSG_SIZE, "corrupt APIC record" );
+		errorlevel = 2;
+		return false;
+	}
+
+	unsigned char* jpg_out = NULL; unsigned int jpg_len = 0;
+	char msg[ PJG_MSG_SIZE ] = {0};
+	bool ok;
+	{
+		std::lock_guard<std::mutex> lk( pjg_mutex );
+		pjglib_init_streams( (void*)( data_before + apic_offset ), 1, apic_pjg_len, NULL, 1 );
+		ok = pjglib_convert_stream2mem( &jpg_out, &jpg_len, msg );
+	}
+	if ( !ok || jpg_out == NULL || jpg_len != (unsigned int) apic_orig_len ) {
+		if ( jpg_out != NULL ) free( jpg_out );
+		snprintf( errormessage, MSG_SIZE, "packJPG decode failed: %s", msg );
+		errorlevel = 2;
+		return false;
+	}
+
+	int new_size = data_before_size - apic_pjg_len + apic_orig_len;
+	unsigned char* buf = (unsigned char*) malloc( new_size > 0 ? new_size : 1 );
+	if ( buf == NULL ) {
+		free( jpg_out );
+		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
+		errorlevel = 2;
+		return false;
+	}
+	memcpy( buf, data_before, apic_offset );
+	memcpy( buf + apic_offset, jpg_out, apic_orig_len );
+	memcpy( buf + apic_offset + apic_orig_len, data_before + apic_offset + apic_pjg_len,
+	        data_before_size - apic_offset - apic_pjg_len );
+	free( jpg_out );
+
+	free( data_before );
+	data_before = buf;
+	data_before_size = new_size;
+	return true;
 }
 #endif
 

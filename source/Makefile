@@ -48,12 +48,19 @@ endif
 # is needed since packmp2's zpaq backend is C++.
 LDFLAGS += -Lvendor/packmp2 -lpackmp2 -lstdc++
 
-# Windows-targeted packmp2 static libs (separate mingw-built .a's, since
-# BUILD_LIB isn't set for the full-CLI win-x64/win-x86 cross-compile --
-# unlike dll-x64/dll-x86, which never reference packmp2 symbols under
+# Embedded ID3v2 cover-art (APIC) recompression: packJPG library (sibling
+# project, vendored .a + header under vendor/packjpg/ -- see
+# vendor/packjpg/packjpglib.h).
+LDFLAGS += -Lvendor/packjpg -lpackJPG
+
+# Windows-targeted packmp2/packjpg static libs (separate mingw-built .a's,
+# since BUILD_LIB isn't set for the full-CLI win-x64/win-x86 cross-compile --
+# unlike dll-x64/dll-x86, which never reference these symbols under
 # BUILD_DLL and so don't need these).
 PACKMP2_WIN64 = vendor/packmp2/win64
 PACKMP2_WIN32 = vendor/packmp2/win32
+PACKJPG_WIN64 = vendor/packjpg/win64
+PACKJPG_WIN32 = vendor/packjpg/win32
 
 # ---- Compiler-specific flags ----
 ifeq ($(findstring clang,$(CXX)),clang)
@@ -168,11 +175,11 @@ linux-x64-native: bin
 	@echo "[OK] bin/$(TARGET)_linux_x64_native (native, do not distribute)"
 
 win-x64: bin
-	$(WIN64) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x64.exe $(CXXSRC) -s $(CROSS_LD) -L$(PACKMP2_WIN64) -lpackmp2 -lstdc++
+	$(WIN64) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x64.exe $(CXXSRC) -s $(CROSS_LD) -L$(PACKMP2_WIN64) -lpackmp2 -L$(PACKJPG_WIN64) -lpackJPG -lstdc++
 	@echo "[OK] bin/$(TARGET)_win_x64.exe"
 
 win-x86: bin
-	$(WIN32) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x86.exe $(CXXSRC) -s $(CROSS_LD) -L$(PACKMP2_WIN32) -lpackmp2 -lstdc++
+	$(WIN32) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x86.exe $(CXXSRC) -s $(CROSS_LD) -L$(PACKMP2_WIN32) -lpackmp2 -L$(PACKJPG_WIN32) -lpackJPG -lstdc++
 	@echo "[OK] bin/$(TARGET)_win_x86.exe"
 
 all-platforms: linux-x64 win-x64 win-x86
