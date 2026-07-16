@@ -1918,8 +1918,21 @@ INTERN bool check_file( void )
 				int br = ( pk[p+2] >> 4 ) & 0xF, sr = ( pk[p+2] >> 2 ) & 0x3;
 				if ( lb == 0 || ver == 1 || br == 0 || br == 15 || sr == 3 ) continue; // invalid hdr
 				int layer = 4 - lb;	// 1=I, 2=II, 3=III
-				// Layer I/II (mp1/mp2) is backed by the packMP2 library.
-				if ( layer == 1 || layer == 2 ) filetype = F_MP2;
+				// Layer II (mp2) is backed by the packMP2 library. Layer I (mp1)
+				// stays disabled -- packMP2 is structurally Layer II-only (different
+				// frame length formula, no SCFSI, different bit-alloc/bitrate
+				// tables; confirmed by both packMP2's own source and an empirical
+				// test: a Layer II file with its sync header patched to Layer I
+				// is cleanly rejected, not misdecoded). Rejecting explicitly here
+				// keeps that failure honest instead of silently falling back to
+				// a verbatim "compressed 100%" archive that never actually helped.
+				if ( layer == 2 ) filetype = F_MP2;
+				else if ( layer == 1 ) {
+					filetype = F_UNK;
+					snprintf( errormessage, MSG_SIZE, "Layer I (mp1) not supported - Layer II (mp2) and Layer III (mp3) only" );
+					errorlevel = 1;
+					return false;
+				}
 				break;
 			}
 		}
