@@ -402,17 +402,20 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 	global variables: info about program
 	----------------------------------------------- */
 
-INTERN const unsigned char appversion = 21;
-INTERN const unsigned char appversion_legacy_min = 20; // v2.0 changed the entropy models; no backward-compatible payload
-// v2.1 adds an optional APIC (embedded cover art) recompression flag/record
-// (see pmp_write_header/pmp_read_header) -- purely additive and gated on
-// pmp_archive_version, so v2.0 archives (still >= appversion_legacy_min)
-// keep decoding unaffected. Mirrors the existing v1.3 MPEG-version-bits
-// precedent, not the v2.0 entropy-model break.
+INTERN const unsigned char appversion = 30;
+// appversion_legacy_min stays at 20 (unchanged since the v2.0 entropy-model
+// break) -- v3.0's own additions (packMP2 Layer II backend, packJPG APIC
+// recompression) are purely additive/gated on pmp_archive_version, same
+// precedent as the v1.3 MPEG-version-bits gate, so v2.0 archives still
+// decode unaffected. The major-number jump here is a product-milestone
+// label (bundles a full release's worth of features), not a claim that the
+// wire format broke -- unlike 1.x->2.0, which genuinely did and moved the
+// floor with it.
+INTERN const unsigned char appversion_legacy_min = 20;
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "07/12/2026";
+INTERN const char*  versiondate  = "07/16/2026";
 INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";
