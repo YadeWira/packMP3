@@ -27,6 +27,27 @@ Windows binaries are statically linked (no MSVC redistributable, no
 UCRT/pthread DLL required) — they run on a clean Windows 7 install with
 no extra setup.
 
+### Building from source
+
+MP2 and embedded cover-art support depend on two sibling projects,
+[packMP2](https://github.com/YadeWira/packMP2) and
+[packJPG](https://github.com/YadeWira/packJPG), vendored as **shallow**
+git submodules for header provenance (`source/vendor/packmp2-src`,
+`source/vendor/packjpg-src` — packJPG's own repo history is large, so
+`--depth 1` matters):
+
+```bash
+git clone --recurse-submodules --shallow-submodules --depth 1 \
+    https://github.com/YadeWira/packMP3
+```
+
+The prebuilt static libraries these headers pair with are **not**
+vendored (packMP3 doesn't build either dependency from source) — build
+`libpackmp2.a`/`libpackJPG.a` yourself from those repos (`make lib`,
+non-LTO) and copy them into `source/vendor/packmp2/` and
+`source/vendor/packjpg/` (plus `win64`/`win32` subdirs for the
+cross-compile targets) before running `make`.
+
 
 ## Usage
 
