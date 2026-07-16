@@ -1,6 +1,8 @@
 [submodule "source/vendor/packmp2-src"]
 	path = source/vendor/packmp2-src
 	url = https://github.com/YadeWira/packMP2
+	shallow = true
 [submodule "source/vendor/packjpg-src"]
 	path = source/vendor/packjpg-src
 	url = https://github.com/YadeWira/packJPG
+	shallow = true

@@ -33,7 +33,16 @@
 #include "aricoder.h"
 #include "huffmp3.h"
 #include "huffmp3tbl.h"
-#include "vendor/packmp2/packmp2.h"	// Layer I/II backend (sibling project, see packMP2)
+// Layer I/II backend, see packMP2. Header comes from a pinned git submodule
+// (source/vendor/packmp2-src, see .gitmodules -- shallow, depth 1) rather
+// than a manually-copied file, so it can't silently drift out of sync with
+// whatever commit it's actually pinned at. The prebuilt libpackmp2.a this
+// pairs with is still a separate, gitignored build artifact under
+// vendor/packmp2/{,win64,win32}/ -- the submodule only solves header
+// provenance, not the binary (packMP3 doesn't build packMP2 from source).
+// Thread-safety: packMP3 serializes every packmp2_* call with l2_pmp2_mutex
+// (see below) since packMP2's engine isn't thread-safe internally.
+#include "vendor/packmp2-src/src/lib/packmp2.h"
 #if !defined(BUILD_LIB) && !defined(BUILD_DLL)
 // Embedded ID3v2 cover-art (APIC) recompression, see packJPG. CLI-only --
 // same scope precedent as Layer I/II (packmp2 above): the library API
@@ -47,7 +56,19 @@
 // branch whenever BUILD_DLL is defined, and __declspec is not recognized
 // by native (non-mingw) g++, so `so` fails to compile outright without
 // this guard -- confirmed empirically.
-#include "vendor/packjpg/packjpglib.h"
+//
+// Header comes from a pinned git submodule (source/vendor/packjpg-src,
+// shallow/depth 1) for the same provenance reason as packmp2 above.
+// IMPORTANT: packMP3 and packJPG share inherited coder architecture and
+// define C++ classes with IDENTICAL names (model_s/model_b) -- linking both
+// .o sets directly causes a real "multiple definition" ODR violation, not
+// cosmetic. The prebuilt libpackJPG.a under vendor/packjpg/{,win64,win32}/
+// has those symbols renamed via `objcopy --redefine-syms` (map committed at
+// vendor/packjpg/redefine_map*.txt) -- never touches packJPG's own source,
+// only this vendored binary copy. packMP3 also serializes every pjglib_*
+// call with pjg_mutex (see below): packJPG's thread-safety for concurrent
+// calls is unverified.
+#include "vendor/packjpg-src/source/packjpglib.h"
 #endif
 
 #if defined BUILD_DLL // define BUILD_LIB from the compiler options if you want to compile a DLL!

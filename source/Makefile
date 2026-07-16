@@ -43,14 +43,19 @@ else
   UPX =
 endif
 
-# Layer I/II backend: packMP2 library (sibling project, vendored .a + header
-# under vendor/packmp2/ for now -- see vendor/packmp2/packmp2.h). -lstdc++
+# Layer I/II backend: packMP2 library (sibling project). Header comes from
+# the vendor/packmp2-src/ git submodule (see .gitmodules); the prebuilt
+# static lib is a separate, gitignored build artifact under vendor/packmp2/
+# (run `make lib` in the packMP2 repo and copy libpackmp2.a in). -lstdc++
 # is needed since packmp2's zpaq backend is C++.
 LDFLAGS += -Lvendor/packmp2 -lpackmp2 -lstdc++
 
 # Embedded ID3v2 cover-art (APIC) recompression: packJPG library (sibling
-# project, vendored .a + header under vendor/packjpg/ -- see
-# vendor/packjpg/packjpglib.h).
+# project). Header comes from the vendor/packjpg-src/ git submodule; the
+# prebuilt static lib under vendor/packjpg/ is a separate build artifact
+# (non-LTO build + objcopy --redefine-syms -- see the include comment in
+# packmp3.cpp for the ODR-collision rename rationale, and
+# vendor/packjpg/redefine_map*.txt for the actual symbol map).
 LDFLAGS += -Lvendor/packjpg -lpackJPG
 
 # Windows-targeted packmp2/packjpg static libs (separate mingw-built .a's,
