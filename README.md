@@ -456,3 +456,4 @@ Logo and icon designed by Michael Kaufmann.
 
 * **Repository:** https://github.com/YadeWira/packMP3
 * **Issues:** https://github.com/YadeWira/packMP3/issues
+* **Support:** https://www.patreon.com/YadeWira
