@@ -40,8 +40,9 @@
 // pairs with is still a separate, gitignored build artifact under
 // vendor/packmp2/{,win64,win32}/ -- the submodule only solves header
 // provenance, not the binary (packMP3 doesn't build packMP2 from source).
-// Thread-safety: packMP3 serializes every packmp2_* call with l2_pmp2_mutex
-// (see below) since packMP2's engine isn't thread-safe internally.
+// Thread-safety: packMP2 v0.6+ is fully reentrant (per-call heap
+// allocation, no shared mutable state) -- no serialization needed on
+// packMP3's side.
 #include "vendor/packmp2-src/src/lib/packmp2.h"
 #if !defined(BUILD_LIB) && !defined(BUILD_DLL)
 // Embedded ID3v2 cover-art (APIC) recompression, see packJPG. CLI-only --
@@ -447,13 +448,14 @@ INTERN const char*  mp3_ext      = "mp3";
 INTERN const char   pmp_magic[] = { 'M', 'S' };
 INTERN const char   l2_magic[]  = { 'M', '2' };	// separate container for Layer I/II archives
 #if !defined(BUILD_LIB)
-// packMP2's unpack/pack engine uses shared global buffers internally (not
-// thread_local, unlike everything above) -- concurrent calls race per its
-// own documented limitation. -th runs multiple files' process_file() on
-// separate threads, so any packmp2_compress/_decompress/_query_original_size
-// call must be serialized process-wide until packMP2 ships a thread-safe
-// (per-call heap-alloc) engine.
-INTERN std::mutex l2_pmp2_mutex;
+// packMP2 v0.6 (commit 24ead5e) made the unpack/pack engine fully
+// reentrant -- UM2_ARRAY/SKIPPED_DATA moved from shared global buffers to
+// per-call heap allocation. No mutex needed here anymore: -th genuinely
+// parallelizes packmp2_compress/_decompress across files now. (There used
+// to be an l2_pmp2_mutex serializing every call, for the older, non-
+// reentrant engine -- removed once v0.6 landed and was independently
+// verified: regression clean + a real concurrent stress test byte-matched
+// against a serial baseline.)
 
 // Embedded ID3v2 cover-art (APIC) recompression via packJPG. packJPG's own
 // thread-safety for concurrent pjglib_init_streams/pjglib_convert_stream2mem
@@ -7470,11 +7472,7 @@ INTERN bool l2_compress( void )
 	opts.level = PACKMP2_LEVEL_GOOD;
 	char pmsg[ 256 ] = {0};
 	unsigned char* out = NULL; size_t outlen = 0;
-	int rc;
-	{
-		std::lock_guard<std::mutex> lk( l2_pmp2_mutex );	// packMP2 engine isn't thread-safe
-		rc = packmp2_compress( d, (size_t) fsize, &out, &outlen, &opts, pmsg );
-	}
+	int rc = packmp2_compress( d, (size_t) fsize, &out, &outlen, &opts, pmsg );
 
 	bool stored = ( rc != 0 );	// packmp2 failure -> fall back to verbatim store
 	if ( !stored ) {
@@ -7514,11 +7512,7 @@ INTERN bool l2_decompress( void )
 
 	unsigned char* out = NULL; size_t outlen = 0;
 	char pmsg[ 256 ] = {0};
-	int rc;
-	{
-		std::lock_guard<std::mutex> lk( l2_pmp2_mutex );	// packMP2 engine isn't thread-safe
-		rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
-	}
+	int rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
 	free( payload );
 	if ( rc != 0 ) { snprintf( errormessage, MSG_SIZE, "packmp2 decode failed: %s", pmsg ); errorlevel = 2; return false; }
 
@@ -7664,11 +7658,7 @@ INTERN bool list_l2( void )
 	if ( hd[3] != 1 ) {
 		unsigned char* out = NULL; size_t outlen = 0;
 		char pmsg[ 256 ] = {0};
-		int rc;
-		{
-			std::lock_guard<std::mutex> lk( l2_pmp2_mutex );	// packMP2 engine isn't thread-safe
-			rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
-		}
+		int rc = packmp2_decompress( payload, (size_t) rest, &out, &outlen, pmsg );
 		free( payload );
 		if ( rc != 0 ) { snprintf( errormessage, MSG_SIZE, "packmp2 decode failed: %s", pmsg ); errorlevel = 2; return false; }
 		raw = out; rawlen = outlen; free_raw = true;
