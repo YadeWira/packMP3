@@ -456,4 +456,5 @@ Logo and icon designed by Michael Kaufmann.
 
 * **Repository:** https://github.com/YadeWira/packMP3
 * **Issues:** https://github.com/YadeWira/packMP3/issues
+* **Discussion:** https://encode.su/threads/4517-packMP3-Full-MPEG
 * **Support:** https://www.patreon.com/YadeWira
