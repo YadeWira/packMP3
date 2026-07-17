@@ -1531,8 +1531,8 @@ INTERN inline const char* get_status( bool (*function)() )
 INTERN void show_help( void )
 {
 	fprintf( msgout, "\n" );
-	fprintf( msgout, "%s -- lossless MPEG audio compression (MP3 + MP2). Typical reduction: ~16%%.\n", appname );
-	fprintf( msgout, "Compresses MP3/MP2 files to .pm3 archives and decompresses them back,\n" );
+	fprintf( msgout, "%s -- lossless MPEG audio compression (MP3 + MP2 + MP1). Typical reduction: ~16%%.\n", appname );
+	fprintf( msgout, "Compresses MP3/MP2/MP1 files to .pm3 archives and decompresses them back,\n" );
 	fprintf( msgout, "with bit-for-bit identical reconstruction. Embedded ID3v2 JPEG cover art\n" );
 	fprintf( msgout, "is losslessly recompressed automatically, no flag needed.\n" );
 	fprintf( msgout, "\n" );
@@ -1541,10 +1541,10 @@ INTERN void show_help( void )
 	fprintf( msgout, "Usage: %s <subcommand> [switches] [filename(s)]\n", appname );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Subcommands:\n" );
-	fprintf( msgout, " a         compress only: process MP3/MP2 files, skip .pm3\n" );
-	fprintf( msgout, " x         decompress only: process .pm3 files, skip MP3/MP2\n" );
+	fprintf( msgout, " a         compress only: process MP3/MP2/MP1 files, skip .pm3\n" );
+	fprintf( msgout, " x         decompress only: process .pm3 files, skip MP3/MP2/MP1\n" );
 	fprintf( msgout, " mix       mixed mode: auto-detect (warns if both directions used)\n" );
-	fprintf( msgout, " list      list .pm3 file info (MP3 or MP2) without decompressing\n" );
+	fprintf( msgout, " list      list .pm3 file info (MP3, MP2, or MP1) without decompressing\n" );
 	fprintf( msgout, " stats     show source file info (size, layer, channels) without compressing\n" );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Switches:\n" );
@@ -1906,9 +1906,13 @@ INTERN bool check_file( void )
 		// v1.2 'list' reads the header from the input stream only — no output
 		// (L3 -> F_PMP; Layer I/II -> F_PL2, v3.0)
 		if ( action == A_LIST && ( filetype == F_PMP || filetype == F_PL2 ) ) return true;
-		// create filenames. Layer I/II archives reconstruct to .mp2 (Layer II
-		// dominates real-world content; Layer I is rare -- content itself is
-		// always correct regardless of this cosmetic extension choice).
+		// create filenames. Layer I/II archives reconstruct to .mp2 always,
+		// even for real Layer I content (v3.0+) -- the actual layer isn't
+		// known until after packmp2_decompress runs, but the output filename
+		// is chosen here, before decompression starts (str_out is already
+		// bound to it). Fixing this would mean buffering the whole decoded
+		// file before naming it, real restructuring for a cosmetic detail --
+		// content itself is always byte-correct regardless of extension.
 		const char* out_ext = is_pl2 ? "mp2" : mp3_ext;
 		if ( !pipe_on ) {
 			pmpfilename = (char*) calloc( strlen( filename ) + 1, sizeof( char ) );
@@ -1945,21 +1949,17 @@ INTERN bool check_file( void )
 				int br = ( pk[p+2] >> 4 ) & 0xF, sr = ( pk[p+2] >> 2 ) & 0x3;
 				if ( lb == 0 || ver == 1 || br == 0 || br == 15 || sr == 3 ) continue; // invalid hdr
 				int layer = 4 - lb;	// 1=I, 2=II, 3=III
-				// Layer II (mp2) is backed by the packMP2 library. Layer I (mp1)
-				// stays disabled -- packMP2 is structurally Layer II-only (different
-				// frame length formula, no SCFSI, different bit-alloc/bitrate
-				// tables; confirmed by both packMP2's own source and an empirical
-				// test: a Layer II file with its sync header patched to Layer I
-				// is cleanly rejected, not misdecoded). Rejecting explicitly here
-				// keeps that failure honest instead of silently falling back to
-				// a verbatim "compressed 100%" archive that never actually helped.
-				if ( layer == 2 ) filetype = F_MP2;
-				else if ( layer == 1 ) {
-					filetype = F_UNK;
-					snprintf( errormessage, MSG_SIZE, "Layer I (mp1) not supported - Layer II (mp2) and Layer III (mp3) only" );
-					errorlevel = 1;
-					return false;
-				}
+				// Layer I/II (mp1/mp2) are both backed by the packMP2 library.
+				// Layer I support landed in packMP2 v0.7 (lab/layer1 branch,
+				// merged after a real thread-safety regression from v0.6 was
+				// found+fixed -- UM2_ARRAY went from zero-initialized static
+				// BSS to malloc'd-but-uninitialized heap, and Layer I's bit-
+				// allocation loop read past its own writes relying on implicit
+				// zero-init that only BSS provided; fixed with calloc, verified
+				// byte-exact through the real packmp2_compress/_decompress API
+				// -- not just the internal unpack/pack transform -- across all
+				// 3 methods (auto/zstd/zpaq) before this was trusted).
+				if ( layer == 1 || layer == 2 ) filetype = F_MP2;
 				break;
 			}
 		}
@@ -7563,6 +7563,14 @@ INTERN bool l2_scan( const unsigned char* buf, int len, int* out_mpeg, int* out_
                      int* out_channels, int* out_samplerate, int* out_bitrate,
                      bool* out_vbr, long long* out_frames )
 {
+	// NOTE: `lb` (the raw 2-bit header field) already matches the
+	// LAYER_I/LAYER_II/LAYER_III #define values directly (LAYER_III=1,
+	// LAYER_II=2, LAYER_I=3 -- same as bitrate_table's layer dimension) --
+	// unlike check_file()'s own `layer = 4 - lb` convention (human-reading
+	// order, 1=Layer I/2=Layer II/3=Layer III), which must NOT be used here.
+	// A real bug lived here for exactly this mix-up: it only ever "worked"
+	// for Layer II because 2 happens to be identical in both conventions,
+	// masking it until real Layer I data (not just Layer II) exercised it.
 	int p = 0;
 	int mpeg = 0, layer = 0, mode = 0, samplerate = 0, bitrate = 0;
 	for ( ; p + 4 <= len; p++ ) {
@@ -7570,12 +7578,11 @@ INTERN bool l2_scan( const unsigned char* buf, int len, int* out_mpeg, int* out_
 		int lb = ( buf[p+1] >> 1 ) & 0x3, ver = ( buf[p+1] >> 3 ) & 0x3;
 		int br = ( buf[p+2] >> 4 ) & 0xF, sr = ( buf[p+2] >> 2 ) & 0x3;
 		if ( lb == 0 || ver == 1 || br == 0 || br == 15 || sr == 3 ) continue;
-		int lyr = 4 - lb;
-		if ( lyr != LAYER_I && lyr != LAYER_II ) continue;
+		if ( lb != LAYER_I && lb != LAYER_II ) continue;
 		int hz = samplerate_table[ ver ][ sr ];
-		int kbps = bitrate_table[ ver ][ lyr ][ br ];
+		int kbps = bitrate_table[ ver ][ lb ][ br ];
 		if ( hz <= 0 || kbps <= 0 ) continue;
-		mpeg = ver; layer = lyr; samplerate = hz; bitrate = kbps;
+		mpeg = ver; layer = lb; samplerate = hz; bitrate = kbps;
 		mode = ( buf[p+3] >> 6 ) & 0x3;
 		break;
 	}
@@ -7589,10 +7596,9 @@ INTERN bool l2_scan( const unsigned char* buf, int len, int* out_mpeg, int* out_
 		int br = ( buf[q+2] >> 4 ) & 0xF, sr = ( buf[q+2] >> 2 ) & 0x3;
 		int pad = ( buf[q+2] >> 1 ) & 0x1;
 		if ( lb == 0 || ver == 1 || br == 0 || br == 15 || sr == 3 ) break;
-		int lyr = 4 - lb;
-		if ( lyr != layer || ver != mpeg ) break;	// format change: stop counting
-		int kbps = bitrate_table[ ver ][ lyr ][ br ];
-		int fsize = l2_frame_bytes( ver, lyr, sr, br, pad );
+		if ( lb != layer || ver != mpeg ) break;	// format change: stop counting
+		int kbps = bitrate_table[ ver ][ lb ][ br ];
+		int fsize = l2_frame_bytes( ver, lb, sr, br, pad );
 		if ( kbps <= 0 || fsize <= 0 ) break;
 		if ( kbps != ref_br ) vbr = true;
 		frames++;

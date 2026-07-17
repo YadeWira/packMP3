@@ -1,12 +1,13 @@
 # packMP3
 
 packMP3 is a lossless compression program for MPEG audio files —
-MP3 (Layer III) and, as of v3.0, MP2 (Layer II). It reconstructs the
-exact original file, bit for bit. MP3 is re-encoded with an adaptive
-arithmetic coder (typical reduction: **~11-16%**); MP2 is handled by
-the sibling [packMP2](https://github.com/YadeWira/packMP2) library.
-Embedded ID3v2 cover art (JPEG) is losslessly recompressed too, via the
-sibling [packJPG](https://github.com/YadeWira/packJPG) library.
+MP3 (Layer III) and, as of v3.0, MP1/MP2 (Layer I/II). It reconstructs
+the exact original file, bit for bit. MP3 is re-encoded with an
+adaptive arithmetic coder (typical reduction: **~11-16%**); MP1/MP2 are
+handled by the sibling [packMP2](https://github.com/YadeWira/packMP2)
+library. Embedded ID3v2 cover art (JPEG) is losslessly recompressed
+too, via the sibling [packJPG](https://github.com/YadeWira/packJPG)
+library.
 
 **Supported platforms:** Linux x64, Windows 7 SP1+ (x64 and x86).
 
@@ -29,7 +30,7 @@ no extra setup.
 
 ### Building from source
 
-MP2 and embedded cover-art support depend on two sibling projects,
+MP1/MP2 and embedded cover-art support depend on two sibling projects,
 [packMP2](https://github.com/YadeWira/packMP2) and
 [packJPG](https://github.com/YadeWira/packJPG), vendored as **shallow**
 git submodules for header provenance (`source/vendor/packmp2-src`,
@@ -59,10 +60,10 @@ packMP3 <subcommand> [switches] [filename(s)]
 
 | Subcommand | Description |
 |---|---|
-| `a` | compress MP3/MP2 files to `.pm3` (archive) |
-| `x` | decompress `.pm3` files back to MP3/MP2 (extract) |
+| `a` | compress MP3/MP2/MP1 files to `.pm3` (archive) |
+| `x` | decompress `.pm3` files back to MP3/MP2/MP1 (extract) |
 | `mix` | auto-detect and process both directions (use with caution) |
-| `list` | display info about `.pm3` archives (MP3 or MP2) without decompressing |
+| `list` | display info about `.pm3` archives (MP3, MP2, or MP1) without decompressing |
 | `stats` | show source file info (size, MPEG layer/version, channels, bitrate) without compressing |
 
 packMP3 recognizes file types by content, not extension. MP3 goes to
@@ -344,16 +345,14 @@ MPEG-2.5 Audio Layer III. As of v2.0, packMP3 compresses all three
 (mono, stereo, joint stereo and dual channel; constant and variable
 bitrate).
 
-As of v3.0, MP2 (MPEG Audio Layer II) is also supported, backed by the
+As of v3.0, MP1 (MPEG Audio Layer I) and MP2 (MPEG Audio Layer II) are
+also supported, backed by the
 [packMP2](https://github.com/YadeWira/packMP2) library — same `a`/`x`/
 `list`/`stats`/`-ver` workflow, separate `.pm3` container (`"M2"`
-magic) so it never collides with the MP3 format.
-
-MP1 (MPEG Audio Layer I) is **not** supported and is rejected cleanly
-with a message — Layer I has a meaningfully different frame structure
-from Layer II (different frame-length formula, no SCFSI, different
-bit-allocation tables) and the packMP2 backend is structurally
-Layer-II-only. Files are never damaged; they're just skipped.
+magic) so neither collides with the MP3 format. Layer I has a
+meaningfully different frame structure from Layer II (different
+frame-length formula, no SCFSI, different bit-allocation tables), but
+packMP2 handles both.
 
 Some rare MP3 encodings are rejected (never damaged) rather than
 compressed: free-format bitrate, and frames mixing long and short
@@ -415,12 +414,11 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
-* **v3.0 (LTS)** — MP2 (MPEG Audio Layer II) support via the
+* **v3.0 (LTS)** — MP1/MP2 (MPEG Audio Layer I/II) support via the
   [packMP2](https://github.com/YadeWira/packMP2) library (`a`/`x`/
   `list`/`stats`/`-ver`, separate `"M2"` container); losslessly
   recompresses embedded ID3v2 JPEG cover art via
-  [packJPG](https://github.com/YadeWira/packJPG); MP1 explicitly
-  rejected (not supported, see Known limitations); format additions are
+  [packJPG](https://github.com/YadeWira/packJPG); format additions are
   backward-compatible with v2.0/v2.1 archives.
 * **v2.0** — full MP3 family (MPEG-1/2/2.5 Layer III, all channel
   modes, CBR/VBR), new `.pm3` extension, `-k` intra-file parallel
