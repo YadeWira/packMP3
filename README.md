@@ -387,6 +387,25 @@ meaningfully different frame structure from Layer II (different
 frame-length formula, no SCFSI, different bit-allocation tables), but
 packMP2 handles both.
 
+**MP2/MP1 compression is noticeably slower on Windows than on Linux for
+the same input** (roughly 2x on real test material) — the compressed
+output is byte-identical either way, only speed differs. Root-caused
+jointly with packMP2: real profiling on both platforms (callgrind on
+Linux, a fixed-ASLR gprof build on Windows) confirms the same two
+functions dominate runtime everywhere (`Predictor::update`/`predict` in
+packMP2's zpaq backend, called ~17.5 million times per file), and the
+JIT-generated machine code they call into is verified correct on both
+platforms. Six specific hypotheses were ruled out with real
+measurements (pthread linkage, static vs. dynamic CRT, SEH unwind
+tables, `-O2` vs `-O3`, JIT calling convention, missing
+`-fomit-frame-pointer`) — none explain the gap. What's left is an
+accumulation of small mingw-vs-native-GCC codegen differences in these
+hot C++ functions, not a single fixable flag; closing it for real would
+need hardware-level profiling (VTune or equivalent) that isn't
+available in this project's toolchain. If Windows compression speed
+matters for your workload, native Linux (or WSL) is meaningfully
+faster for MP2/MP1 today.
+
 Some rare MP3 encodings are rejected (never damaged) rather than
 compressed: free-format bitrate, and frames mixing long and short
 blocks within one granule.
