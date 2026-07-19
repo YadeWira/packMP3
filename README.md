@@ -176,6 +176,13 @@ per-file result line shows the cover's own before/after size:
 just encoded generically like the rest) — `-d` (discard meta-info) is
 the broader switch that drops the whole tag entirely.
 
+`-sfth` (matching packJPG's own flag of the same name) recompresses the
+cover using packJPG/packPNG's own intra-file multi-threading (Y/Cb/Cr in
+parallel for JPEG, a worker pool for PNG) instead of a single thread —
+worth it for large covers, likely not for small ones (neither library
+gates this by image size internally, so packMP3 doesn't either; it's a
+call the user makes when invoking the flag).
+
 
 ## Command-line switches
 
@@ -197,6 +204,7 @@ the broader switch that drops the whole tag entirely.
 | `-p` | proceed on warnings |
 | `-d` | discard meta-info (ID3 tags) |
 | `-nc` | skip embedded cover-art (APIC) recompression, keep the tag as-is |
+| `-sfth` | parallel single-cover recompression (packJPG/packPNG's own intra-file multi-threading) |
 
 Most of these switches — subcommands `a`/`x`/`list`, `-od`/`-r`/`-fs`/`-dry`/`-ver`/`-np`/`-o`/`-module`/`-th<n>`/`-p`/`-d`/`-v<n>` — follow a shared CLI convention coordinated with the sibling lossless-recompressor projects [packJPG](https://github.com/YadeWira/packJPG) and [packPNG](https://github.com/YadeWira/packPNG). Release binaries also share the `<name>_<platform>_<arch>[.exe]` naming pattern across all three.
 

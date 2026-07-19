@@ -422,6 +422,7 @@ INTERN bool recursive      = false;		// -r: recurse into subdirectories
 INTERN bool fs_mode        = false;		// -fs: preserve source folder structure under -od when -r expands a dir
 INTERN bool dry_run        = false;		// -dry: simulate without writing output files
 INTERN bool no_cover       = false;		// -nc: skip embedded cover-art (APIC) recompression
+INTERN bool sfth_mode      = false;		// -sfth: parallel single-cover recompression (packJPG Y/Cb/Cr, packPNG worker pool)
 INTERN bool module_mode    = false;		// -module: machine-friendly output (OK/ERROR + time only)
 INTERN bool force_no_color = false;		// --no-color
 INTERN char* outdir        = NULL;		// -od<DIR>: write output files to this directory
@@ -603,6 +604,22 @@ int main( int argc, char** argv )
 	
 	// read options from command line
 	initialize_options( argc, argv );
+
+	#if !defined(BUILD_LIB) && !defined(BUILD_DLL)
+	// -sfth: parallel single-cover recompression. Both pjglib_set_intra_
+	// file_threads and packpng_set_threads are plain global process state
+	// (not thread-local, not atomic, not mutex-protected -- confirmed with
+	// packJPG directly) -- must be set exactly once, here, before any -th
+	// worker thread is ever spawned below. 0 = auto (matches each library's
+	// own "3+ cores" resolution, same as their CLI -sfth default) --
+	// packMP3 doesn't gate this by cover size (neither library does either;
+	// per packJPG, a cover under ~50KB likely isn't worth the thread-spawn
+	// overhead, but that's a user call, not something to silently override).
+	if ( sfth_mode ) {
+		pjglib_set_intra_file_threads( 0 );
+		packpng_set_threads( 0 );
+	}
+	#endif
 
 	// v1.2: enable ANSI colors if appropriate (after parsing so --no-color
 	// and -module are honoured). module_mode disables colors automatically
@@ -1156,6 +1173,9 @@ INTERN void initialize_options( int argc, char** argv )
 		else if ( strcmp((*argv), "-nc" ) == 0 ) {
 			no_cover = true;
 		}
+		else if ( strcmp((*argv), "-sfth" ) == 0 ) {
+			sfth_mode = true;
+		}
 		else if ( strcmp((*argv), "-module" ) == 0 ) {
 			module_mode = true;
 			wait_exit = false;
@@ -1625,6 +1645,7 @@ INTERN void show_help( void )
 	fprintf( msgout, " [-p]     proceed on warnings\n" );
 	fprintf( msgout, " [-d]     discard meta-info (ID3 tags)\n" );
 	fprintf( msgout, " [-nc]    skip embedded cover-art (APIC) recompression, keep tag as-is\n" );
+	fprintf( msgout, " [-sfth]  parallel single-cover recompression (packJPG/packPNG multi-thread)\n" );
 	#if defined(DEV_BUILD)
 	if ( developer ) {
 	fprintf( msgout, "\n" );
