@@ -442,7 +442,7 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 INTERN const unsigned char appversion = 31;
 // appversion_legacy_min stays at 20 (unchanged since the v2.0 entropy-model
 // break) -- v3.0's own additions (packMP2 Layer II backend, packJPG APIC
-// recompression) and v3.1's (packPNG APIC recompression) are purely
+// recompression) and this build's (packPNG APIC recompression) are purely
 // additive/gated on pmp_archive_version, same precedent as the v1.3
 // MPEG-version-bits gate, so v2.0 archives still decode unaffected. Bumping
 // this (not just adding a gated bit under the existing value) matters here:
@@ -454,6 +454,13 @@ INTERN const unsigned char appversion = 31;
 // to decode packPNG bytes with pjglib, silent wrong behavior. Bumping to 31
 // makes old binaries cleanly reject new archives instead.
 INTERN const unsigned char appversion_legacy_min = 20;
+// Displayed product version, deliberately decoupled from appversion above:
+// v3.0 LTS hasn't shipped as a stable/final tag yet (still pre-releases),
+// so the banner/help stay "v3.0" through this whole pre-release series even
+// though appversion keeps incrementing (30->31 here) for the wire-format
+// compat gate. Bump these only when the LTS itself actually ships as 3.x.
+INTERN const unsigned char displayversion_major = 3;
+INTERN const unsigned char displayversion_minor = 0;
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
@@ -596,7 +603,7 @@ int main( int argc, char** argv )
 	// write program info to screen
 	if ( !module_mode ) {
 		fprintf( msgout,  "\n%s--> %s v%i.%i%s (%s) by %s <--%s\n",
-				COL_BCYAN, apptitle, appversion / 10, appversion % 10,
+				COL_BCYAN, apptitle, displayversion_major, displayversion_minor,
 				subversion, versiondate, author, COL_RESET );
 		fprintf( msgout, "Copyright %s\nAll rights reserved\n\n", copyright );
 	}
@@ -977,7 +984,7 @@ EXPORT const char* pmplib_version_info( void )
 	
 	// copy version info to string
 	snprintf( v_info, 256, "--> %s library v%i.%i%s (%s) by %s <--",
-			apptitle, appversion / 10, appversion % 10, subversion, versiondate, author );
+			apptitle, displayversion_major, displayversion_minor, subversion, versiondate, author );
 			
 	return (const char*) v_info;
 }
@@ -995,7 +1002,7 @@ EXPORT const char* pmplib_short_name( void )
 	
 	// copy version info to string
 	snprintf( v_name, 256, "%s v%i.%i%s",
-			apptitle, appversion / 10, appversion % 10, subversion );
+			apptitle, displayversion_major, displayversion_minor, subversion );
 			
 	return (const char*) v_name;
 }
@@ -8831,7 +8838,7 @@ INTERN bool visualize_headers( void )
 	// write PGM header
 	fprintf( fp, "P5\n" );
 	fprintf( fp, "# created by %s v%i.%i%s (%s) by %s\n",
-		appname, appversion / 10, appversion % 10, subversion, versiondate, author );
+		appname, displayversion_major, displayversion_minor, subversion, versiondate, author );
 	fprintf( fp, "%i %i\n", img_width, ( ((g_nframes*2) + img_width - 1)  / img_width ) * ( inc_all ? 60 : 40 ) );
 	fprintf( fp, "255\n" );
 	
@@ -9267,7 +9274,7 @@ INTERN bool visualize_decoded_data( void )
 	for ( i = 0; i < (nfs+nfc); i++ ) {
 		fprintf( fp[i], "P5\n" );
 		fprintf( fp[i], "# created by %s v%i.%i%s (%s) by %s\n",
-			appname, appversion / 10, appversion % 10, subversion, versiondate, author );
+			appname, displayversion_major, displayversion_minor, subversion, versiondate, author );
 		fprintf( fp[i], "%i %i\n", (i>=nfs)?width_cf:width_sc, (i>=nfs)?height_cf:height_sc );
 		fprintf( fp[i], "255\n" );
 	}

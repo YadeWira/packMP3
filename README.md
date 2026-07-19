@@ -330,10 +330,10 @@ library APIs, which do expose thread/batch control — closing this gap
 is a future decision for packMP3, not a blocker for the current
 release.
 
-MP2 support and embedded cover-art recompression (JPEG covers new in
-v3.0, PNG covers new in v3.1) are also CLI-only — the library only ever
-handles MP3 (Layer III) `.pm3` archives, same scope as the threading gap
-above.
+MP2 support and embedded cover-art recompression (JPEG and PNG covers,
+both added during the v3.0 LTS pre-release series) are also CLI-only —
+the library only ever handles MP3 (Layer III) `.pm3` archives, same
+scope as the threading gap above.
 
 ### Windows DLL and `thread_local`
 
@@ -376,15 +376,18 @@ tolerance and compatibility (see the `-p`/`-d`/`-ver` trade-off above).
 Compressed archives are not always compatible across packMP3 major
 versions — v2.0 changed the on-disk format, so v1.x `.pmp` files
 cannot be decoded by v2.0 and vice versa. You'll get a clean error
-message rather than garbage output if you try. v3.x is an exception:
+message rather than garbage output if you try. v3.0 is an exception:
 its format additions (MP2, MP1, embedded cover-art recompression) are
 purely additive and version-gated, so v2.0/v2.1 `.pm3` archives still
-decode correctly on the current build. A v3.1 archive with a
-PNG-recompressed cover will, correctly, be rejected with a clean
-"newer build" error by a v3.0 binary (rather than misdecoded) — the
-same additive-and-gated principle also means it's a one-way street:
-older binaries can't read what a newer feature wrote, but everything
-older keeps working on newer binaries.
+decode correctly on the current build. Note the archive format has its
+own internal version stamp, separate from the displayed "v3.0" product
+version — it has ticked forward more than once during this still-ongoing
+pre-release series as features were added (each bump gated the same
+way), so an older pre-release binary will cleanly reject an archive
+written by a newer one with a "newer build" error (rather than
+misdecode it), while still reading everything older correctly. It's a
+one-way street: older binaries can't read what a newer feature wrote,
+but everything older keeps working on newer binaries.
 
 On Windows, dragging too many files at once may show a
 missing-privileges error; use the command line instead.
@@ -430,17 +433,13 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
-* **v3.1** — losslessly recompresses embedded ID3v2 PNG cover art too,
-  via the sibling [packPNG](https://github.com/YadeWira/packPNG) library
-  (JPEG covers were already supported since v3.0) — same self-verifying,
-  bail-to-generic-on-anything-unusual design. Format addition is
-  backward-compatible: v2.0/v2.1/v3.0 archives still decode correctly.
-* **v3.0 (LTS)** — MP1/MP2 (MPEG Audio Layer I/II) support via the
-  [packMP2](https://github.com/YadeWira/packMP2) library (`a`/`x`/
-  `list`/`stats`/`-ver`, separate `"M2"` container); losslessly
-  recompresses embedded ID3v2 JPEG cover art via
-  [packJPG](https://github.com/YadeWira/packJPG); format additions are
-  backward-compatible with v2.0/v2.1 archives.
+* **v3.0 (LTS, in pre-release)** — MP1/MP2 (MPEG Audio Layer I/II)
+  support via the [packMP2](https://github.com/YadeWira/packMP2) library
+  (`a`/`x`/`list`/`stats`/`-ver`, separate `"M2"` container); losslessly
+  recompresses embedded ID3v2 cover art, JPEG via
+  [packJPG](https://github.com/YadeWira/packJPG) and PNG via
+  [packPNG](https://github.com/YadeWira/packPNG); format additions are
+  backward-compatible with v2.0/v2.1 archives throughout.
 * **v2.0** — full MP3 family (MPEG-1/2/2.5 Layer III, all channel
   modes, CBR/VBR), new `.pm3` extension, `-k` intra-file parallel
   chunking, retuned entropy models, link-time optimization and an
