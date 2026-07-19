@@ -164,8 +164,17 @@ artwork further, with no extra flag needed. It's self-verifying (the
 recompressed image is decompressed and byte-compared before ever being
 used) and silently falls back to the ordinary generic encoding for
 anything unusual — other image formats (GIF, BMP, etc.), unsynchronised
-tags, multiple pictures, or any parsing surprise. `-d` (discard
-meta-info) skips this entirely along with the rest of the tag.
+tags, multiple pictures, or any parsing surprise. When it happens, the
+per-file result line shows the cover's own before/after size:
+
+```
+  ✓  song.mp3   9053 KB → 7714 KB  85.2%  4.16s
+       cover art (PNG):    740.3 KB ->    324.5 KB   43.8%
+```
+
+`-nc` skips cover-art recompression specifically (the tag is still kept,
+just encoded generically like the rest) — `-d` (discard meta-info) is
+the broader switch that drops the whole tag entirely.
 
 
 ## Command-line switches
@@ -187,6 +196,7 @@ meta-info) skips this entirely along with the rest of the tag.
 | `-module` | machine-friendly output: `OK`/`ERROR` + elapsed time |
 | `-p` | proceed on warnings |
 | `-d` | discard meta-info (ID3 tags) |
+| `-nc` | skip embedded cover-art (APIC) recompression, keep the tag as-is |
 
 Most of these switches — subcommands `a`/`x`/`list`, `-od`/`-r`/`-fs`/`-dry`/`-ver`/`-np`/`-o`/`-module`/`-th<n>`/`-p`/`-d`/`-v<n>` — follow a shared CLI convention coordinated with the sibling lossless-recompressor projects [packJPG](https://github.com/YadeWira/packJPG) and [packPNG](https://github.com/YadeWira/packPNG). Release binaries also share the `<name>_<platform>_<arch>[.exe]` naming pattern across all three.
 

@@ -421,6 +421,7 @@ INTERN bool disc_meta      = false;		// -d: discard ID3/meta tags
 INTERN bool recursive      = false;		// -r: recurse into subdirectories
 INTERN bool fs_mode        = false;		// -fs: preserve source folder structure under -od when -r expands a dir
 INTERN bool dry_run        = false;		// -dry: simulate without writing output files
+INTERN bool no_cover       = false;		// -nc: skip embedded cover-art (APIC) recompression
 INTERN bool module_mode    = false;		// -module: machine-friendly output (OK/ERROR + time only)
 INTERN bool force_no_color = false;		// --no-color
 INTERN char* outdir        = NULL;		// -od<DIR>: write output files to this directory
@@ -518,6 +519,15 @@ THREAD_LOCAL int  apic_pjg_len  = 0;	// stored (packJPG/packPNG-compressed) leng
 // (see pmp_read_header) so pre-v3.1 archives (which never set this) always
 // take the packJPG path, matching their only-ever-possible actual content.
 THREAD_LOCAL bool apic_is_png   = false;
+// process_file() unconditionally calls reset_buffers() at its end (to clear
+// stale state before the NEXT file), which clears apic_present et al before
+// the per-file result line ever gets printed -- these snapshot the values
+// right after compress_mp3 runs (see process_file), so the UI can still show
+// cover-art stats for the file that was just processed.
+THREAD_LOCAL bool apic_present_disp  = false;
+THREAD_LOCAL bool apic_is_png_disp   = false;
+THREAD_LOCAL int  apic_orig_len_disp = 0;
+THREAD_LOCAL int  apic_pjg_len_disp  = 0;
 INTERN const char   pmc_magic[] = { 'M', 'K' };	// chunked container: K independent "MS" sub-streams
 #define MAX_CHUNKS       64				// upper bound on -k
 #define MIN_FRAMES_CHUNK 16				// don't split below this many frames per chunk
@@ -1143,6 +1153,9 @@ INTERN void initialize_options( int argc, char** argv )
 		else if ( strcmp((*argv), "-dry" ) == 0 ) {
 			dry_run = true;
 		}
+		else if ( strcmp((*argv), "-nc" ) == 0 ) {
+			no_cover = true;
+		}
 		else if ( strcmp((*argv), "-module" ) == 0 ) {
 			module_mode = true;
 			wait_exit = false;
@@ -1404,6 +1417,14 @@ INTERN void process_ui( void )
 							fprintf( msgout, "\r  %s\xe2\x9c\x93%s  %-46.46s %6lld KB \xe2\x86\x92 %6lld KB  %5.1f%%  %5.2fs\n",
 								COL_BGREEN, COL_RESET, _fn, orig_kb, comp_kb, cr, time_s );
 							#endif
+							// cover-art recompression stats (packJPG/packPNG), if it happened
+							if ( apic_present_disp ) {
+								double img_orig_kb = apic_orig_len_disp / 1024.0;
+								double img_comp_kb = apic_pjg_len_disp  / 1024.0;
+								double img_cr = ( apic_orig_len_disp > 0 ) ? ( 100.0 * apic_pjg_len_disp / apic_orig_len_disp ) : 0.0;
+								fprintf( msgout, "       cover art (%s): %8.1f KB -> %8.1f KB  %5.1f%%\n",
+									apic_is_png_disp ? "PNG" : "JPEG", img_orig_kb, img_comp_kb, img_cr );
+							}
 						} else if ( action != A_LIST && action != A_STATS ) {
 							#if defined(_WIN32) || defined(WIN32)
 							fprintf( msgout, "\r  +  %-46.46s DONE\n", _fn );
@@ -1603,6 +1624,7 @@ INTERN void show_help( void )
 	fprintf( msgout, " [-od<p>] write output files to directory <p>\n" );
 	fprintf( msgout, " [-p]     proceed on warnings\n" );
 	fprintf( msgout, " [-d]     discard meta-info (ID3 tags)\n" );
+	fprintf( msgout, " [-nc]    skip embedded cover-art (APIC) recompression, keep tag as-is\n" );
 	#if defined(DEV_BUILD)
 	if ( developer ) {
 	fprintf( msgout, "\n" );
@@ -1627,7 +1649,16 @@ INTERN void show_help( void )
 	----------------------------------------------- */
 
 INTERN void process_file( void )
-{	
+{
+	#if !defined(BUILD_LIB)
+	// clear the previous file's cover-art display snapshot unconditionally --
+	// reset_buffers() (called at the end of this function) can't do this
+	// itself, since that would erase the snapshot this same call is about to
+	// set further down, before the caller ever gets to print it.
+	apic_present_disp = false;
+	apic_is_png_disp = false;
+	apic_orig_len_disp = apic_pjg_len_disp = 0;
+	#endif
 	if ( filetype == F_MP3 ) {
 		switch ( action ) {
 			case A_COMPRESS:
@@ -1639,6 +1670,10 @@ INTERN void process_file( void )
 					execute( analyze_frames );
 					execute( compress_mp3 );
 					#if !defined(BUILD_LIB)
+					apic_present_disp  = apic_present;
+					apic_is_png_disp   = apic_is_png;
+					apic_orig_len_disp = apic_orig_len;
+					apic_pjg_len_disp  = apic_pjg_len;
 					if ( verify_lv > 0 ) { // verifcation
 						execute( reset_buffers );
 						execute( swap_streams );
@@ -2662,7 +2697,7 @@ INTERN bool compress_mp3( void )
 
 	#if !defined(BUILD_LIB) && !defined(STORE_ID3)
 	unsigned char* apic_modified = NULL; int apic_modified_size = 0;
-	if ( data_before_size > 0 )
+	if ( !no_cover && data_before_size > 0 )
 		apic_try_recompress( &apic_modified, &apic_modified_size );
 	#endif
 
