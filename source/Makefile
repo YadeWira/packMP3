@@ -105,7 +105,7 @@ $(TARGET): $(OBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo
+.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb
 
 all: $(TARGET)
 
@@ -173,7 +173,8 @@ clean:
 	         bin/$(TARGET).dll \
 	         bin/lib$(TARGET).a \
 	         bin/$(TARGET)32.dll \
-	         bin/lib$(TARGET)32.a
+	         bin/lib$(TARGET)32.a \
+	         bin/packmp3_*_amd64.deb
 
 # ---- Cross-compilation targets -----------------------------------------------
 #
@@ -198,6 +199,21 @@ linux-x64: bin
 linux-x64-native: bin
 	$(CXX) $(CXXFLAGS) -march=native -o bin/$(TARGET)_linux_x64_native $(CXXSRC) -s $(LDFLAGS)
 	@echo "[OK] bin/$(TARGET)_linux_x64_native (native, do not distribute)"
+
+# Debian package (manual for now -- run this and `gh api .../dispatches`
+# by hand per release, same as the rest of the release process; see
+# ../packaging/debian/control for the version/deps/description to keep in
+# sync with each release). Needs dpkg-deb + fakeroot.
+DEBSTAGE = /tmp/packmp3_deb_build
+deb: linux-x64
+	rm -rf $(DEBSTAGE)
+	mkdir -p $(DEBSTAGE)/DEBIAN $(DEBSTAGE)/usr/bin
+	cp bin/$(TARGET)_linux_x64 $(DEBSTAGE)/usr/bin/packmp3
+	chmod 755 $(DEBSTAGE) $(DEBSTAGE)/usr $(DEBSTAGE)/usr/bin $(DEBSTAGE)/usr/bin/packmp3
+	cp ../packaging/debian/control $(DEBSTAGE)/DEBIAN/control
+	$(eval DEBVER := $(shell awk -F': ' '/^Version:/{print $$2}' $(DEBSTAGE)/DEBIAN/control))
+	fakeroot dpkg-deb --build $(DEBSTAGE) bin/packmp3_$(DEBVER)_amd64.deb
+	@echo "[OK] bin/packmp3_$(DEBVER)_amd64.deb"
 
 win-x64: bin
 	$(WIN64) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x64.exe $(CXXSRC) -s $(CROSS_LD) \
