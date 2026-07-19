@@ -6,3 +6,7 @@
 	path = source/vendor/packjpg-src
 	url = https://github.com/YadeWira/packJPG
 	shallow = true
+[submodule "source/vendor/packpng-src"]
+	path = source/vendor/packpng-src
+	url = https://github.com/YadeWira/packPNG
+	shallow = true

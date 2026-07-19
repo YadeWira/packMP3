@@ -58,14 +58,34 @@ LDFLAGS += -Lvendor/packmp2 -lpackmp2 -lstdc++
 # vendor/packjpg/redefine_map*.txt for the actual symbol map).
 LDFLAGS += -Lvendor/packjpg -lpackJPG
 
-# Windows-targeted packmp2/packjpg static libs (separate mingw-built .a's,
-# since BUILD_LIB isn't set for the full-CLI win-x64/win-x86 cross-compile --
-# unlike dll-x64/dll-x86, which never reference these symbols under
-# BUILD_DLL and so don't need these).
+# Embedded ID3v2 cover-art (APIC) recompression, PNG covers: packPNG library
+# (sibling project). Header comes from the vendor/packpng-src/ git submodule;
+# the prebuilt static lib under vendor/packpng/ is a separate build artifact.
+# packPNG's own `make lib` produces a *fat* archive that bundles its own copy
+# of packJPG (it uses packJPG internally) -- since packMP3 already vendors
+# packJPG separately, that embedded copy needed its own objcopy
+# --redefine-syms pass (distinct from packJPG's own rename) before it could
+# be linked alongside our standalone packJPG copy without duplicate-symbol
+# errors; see vendor/packpng/redefine_map*.txt and the include comment in
+# packmp3.cpp. -lz -llzma -lzstd are packPNG's remaining external deps (the
+# fat archive bundles kanzi+preflate but not these system compression libs).
+LDFLAGS += -Lvendor/packpng -lpackpng -lz -llzma -lzstd
+
+# Windows-targeted packmp2/packjpg/packpng static libs (separate mingw-built
+# .a's, since BUILD_LIB isn't set for the full-CLI win-x64/win-x86
+# cross-compile -- unlike dll-x64/dll-x86, which never reference these
+# symbols under BUILD_DLL and so don't need these).
 PACKMP2_WIN64 = vendor/packmp2/win64
 PACKMP2_WIN32 = vendor/packmp2/win32
 PACKJPG_WIN64 = vendor/packjpg/win64
 PACKJPG_WIN32 = vendor/packjpg/win32
+PACKPNG_WIN64 = vendor/packpng/win64
+PACKPNG_WIN32 = vendor/packpng/win32
+# packPNG's Windows static libs need the same mingw-built zlib/lzma/zstd
+# used by its own build (see PPNG's vendor/mingw-deps{,-x86}/lib) -- these
+# are NOT bundled into the .a, unlike kanzi/preflate.
+PACKPNG_DEPS_WIN64 = vendor/packpng/win64/deps
+PACKPNG_DEPS_WIN32 = vendor/packpng/win32/deps
 
 # ---- Compiler-specific flags ----
 ifeq ($(findstring clang,$(CXX)),clang)
@@ -180,11 +200,17 @@ linux-x64-native: bin
 	@echo "[OK] bin/$(TARGET)_linux_x64_native (native, do not distribute)"
 
 win-x64: bin
-	$(WIN64) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x64.exe $(CXXSRC) -s $(CROSS_LD) -L$(PACKMP2_WIN64) -lpackmp2 -L$(PACKJPG_WIN64) -lpackJPG -lstdc++
+	$(WIN64) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x64.exe $(CXXSRC) -s $(CROSS_LD) \
+	  -L$(PACKMP2_WIN64) -lpackmp2 -L$(PACKJPG_WIN64) -lpackJPG \
+	  -L$(PACKPNG_WIN64) -lpackpng -L$(PACKPNG_DEPS_WIN64) -llzma -lzstd -lz \
+	  -lstdc++ -lws2_32 -luserenv -lbcrypt -lntdll
 	@echo "[OK] bin/$(TARGET)_win_x64.exe"
 
 win-x86: bin
-	$(WIN32) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x86.exe $(CXXSRC) -s $(CROSS_LD) -L$(PACKMP2_WIN32) -lpackmp2 -L$(PACKJPG_WIN32) -lpackJPG -lstdc++
+	$(WIN32) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x86.exe $(CXXSRC) -s $(CROSS_LD) \
+	  -L$(PACKMP2_WIN32) -lpackmp2 -L$(PACKJPG_WIN32) -lpackJPG \
+	  -L$(PACKPNG_WIN32) -lpackpng -L$(PACKPNG_DEPS_WIN32) -llzma -lzstd -lz \
+	  -lstdc++ -lws2_32 -luserenv -lbcrypt -lntdll
 	@echo "[OK] bin/$(TARGET)_win_x86.exe"
 
 all-platforms: linux-x64 win-x64 win-x86

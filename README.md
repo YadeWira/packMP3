@@ -5,9 +5,9 @@ MP3 (Layer III) and, as of v3.0, MP1/MP2 (Layer I/II). It reconstructs
 the exact original file, bit for bit. MP3 is re-encoded with an
 adaptive arithmetic coder (typical reduction: **~11-16%**); MP1/MP2 are
 handled by the sibling [packMP2](https://github.com/YadeWira/packMP2)
-library. Embedded ID3v2 cover art (JPEG) is losslessly recompressed
-too, via the sibling [packJPG](https://github.com/YadeWira/packJPG)
-library.
+library. Embedded ID3v2 cover art (JPEG or PNG) is losslessly
+recompressed too, via the sibling [packJPG](https://github.com/YadeWira/packJPG)
+and [packPNG](https://github.com/YadeWira/packPNG) libraries.
 
 **Supported platforms:** Linux x64, Windows 7 SP1+ (x64 and x86).
 
@@ -30,12 +30,13 @@ no extra setup.
 
 ### Building from source
 
-MP1/MP2 and embedded cover-art support depend on two sibling projects,
-[packMP2](https://github.com/YadeWira/packMP2) and
-[packJPG](https://github.com/YadeWira/packJPG), vendored as **shallow**
+MP1/MP2 and embedded cover-art support depend on three sibling projects,
+[packMP2](https://github.com/YadeWira/packMP2),
+[packJPG](https://github.com/YadeWira/packJPG) and
+[packPNG](https://github.com/YadeWira/packPNG), vendored as **shallow**
 git submodules for header provenance (`source/vendor/packmp2-src`,
-`source/vendor/packjpg-src` — packJPG's own repo history is large, so
-`--depth 1` matters):
+`source/vendor/packjpg-src`, `source/vendor/packpng-src` — packJPG's own
+repo history is large, so `--depth 1` matters):
 
 ```bash
 git clone --recurse-submodules --shallow-submodules --depth 1 \
@@ -43,11 +44,19 @@ git clone --recurse-submodules --shallow-submodules --depth 1 \
 ```
 
 The prebuilt static libraries these headers pair with are **not**
-vendored (packMP3 doesn't build either dependency from source) — build
-`libpackmp2.a`/`libpackJPG.a` yourself from those repos (`make lib`,
-non-LTO) and copy them into `source/vendor/packmp2/` and
-`source/vendor/packjpg/` (plus `win64`/`win32` subdirs for the
-cross-compile targets) before running `make`.
+vendored (packMP3 doesn't build any of the three from source) — build
+`libpackmp2.a`/`libpackJPG.a`/`libpackpng.a` yourself from those repos
+(`make lib`, non-LTO for packmp2/packjpg) and copy them into
+`source/vendor/packmp2/`, `source/vendor/packjpg/` and
+`source/vendor/packpng/` (plus `win64`/`win32` subdirs for the
+cross-compile targets) before running `make`. packPNG's own `libpackpng.a`
+bundles a fresh copy of packJPG internally, which collides (same C++
+class/function names) with both packMP3's own code and the standalone
+packJPG copy above — the vendored copy needs an extra `objcopy
+--redefine-syms` pass first (map committed at
+`source/vendor/packpng/redefine_map*.txt`); see the include comment above
+`vendor/packpng-src/source/packpng.h` in `packmp3.cpp` for the exact
+symbol-collision rationale if rebuilding this from scratch.
 
 
 ## Usage
@@ -146,16 +155,17 @@ $ packMP3 list -np song.pm3
 
 ### Embedded cover art
 
-If an MP3's ID3v2 tag carries a JPEG cover (the common case for
+If an MP3's ID3v2 tag carries a JPEG or PNG cover (the common case for
 tagged music files), packMP3 automatically recompresses it losslessly
-via [packJPG](https://github.com/YadeWira/packJPG) instead of storing
-it as generic bytes — shrinking files with high-resolution artwork
-further, with no extra flag needed. It's self-verifying (the
+— via [packJPG](https://github.com/YadeWira/packJPG) for JPEG covers,
+[packPNG](https://github.com/YadeWira/packPNG) for PNG covers — instead
+of storing it as generic bytes, shrinking files with high-resolution
+artwork further, with no extra flag needed. It's self-verifying (the
 recompressed image is decompressed and byte-compared before ever being
 used) and silently falls back to the ordinary generic encoding for
-anything unusual — non-JPEG covers (PNG, etc.), unsynchronised tags,
-multiple pictures, or any parsing surprise. `-d` (discard meta-info)
-skips this entirely along with the rest of the tag.
+anything unusual — other image formats (GIF, BMP, etc.), unsynchronised
+tags, multiple pictures, or any parsing surprise. `-d` (discard
+meta-info) skips this entirely along with the rest of the tag.
 
 
 ## Command-line switches
@@ -320,9 +330,10 @@ library APIs, which do expose thread/batch control — closing this gap
 is a future decision for packMP3, not a blocker for the current
 release.
 
-MP2 support and embedded cover-art recompression (new in v3.0) are also
-CLI-only — the library only ever handles MP3 (Layer III) `.pm3`
-archives, same scope as the threading gap above.
+MP2 support and embedded cover-art recompression (JPEG covers new in
+v3.0, PNG covers new in v3.1) are also CLI-only — the library only ever
+handles MP3 (Layer III) `.pm3` archives, same scope as the threading gap
+above.
 
 ### Windows DLL and `thread_local`
 
@@ -365,10 +376,15 @@ tolerance and compatibility (see the `-p`/`-d`/`-ver` trade-off above).
 Compressed archives are not always compatible across packMP3 major
 versions — v2.0 changed the on-disk format, so v1.x `.pmp` files
 cannot be decoded by v2.0 and vice versa. You'll get a clean error
-message rather than garbage output if you try. v3.0 is an exception:
-its format additions (MP2, embedded cover-art recompression) are
+message rather than garbage output if you try. v3.x is an exception:
+its format additions (MP2, MP1, embedded cover-art recompression) are
 purely additive and version-gated, so v2.0/v2.1 `.pm3` archives still
-decode correctly on v3.0.
+decode correctly on the current build. A v3.1 archive with a
+PNG-recompressed cover will, correctly, be rejected with a clean
+"newer build" error by a v3.0 binary (rather than misdecoded) — the
+same additive-and-gated principle also means it's a one-way street:
+older binaries can't read what a newer feature wrote, but everything
+older keeps working on newer binaries.
 
 On Windows, dragging too many files at once may show a
 missing-privileges error; use the command line instead.
@@ -414,6 +430,11 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
+* **v3.1** — losslessly recompresses embedded ID3v2 PNG cover art too,
+  via the sibling [packPNG](https://github.com/YadeWira/packPNG) library
+  (JPEG covers were already supported since v3.0) — same self-verifying,
+  bail-to-generic-on-anything-unusual design. Format addition is
+  backward-compatible: v2.0/v2.1/v3.0 archives still decode correctly.
 * **v3.0 (LTS)** — MP1/MP2 (MPEG Audio Layer I/II) support via the
   [packMP2](https://github.com/YadeWira/packMP2) library (`a`/`x`/
   `list`/`stats`/`-ver`, separate `"M2"` container); losslessly

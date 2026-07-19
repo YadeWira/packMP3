@@ -70,6 +70,21 @@
 // call with pjg_mutex (see below): packJPG's thread-safety for concurrent
 // calls is unverified.
 #include "vendor/packjpg-src/source/packjpglib.h"
+
+// Embedded ID3v2 cover-art (APIC) recompression, PNG covers: packPNG library
+// (sibling project), same CLI-only scope as the packJPG case above.
+// packPNG's own `make lib` bundles a fresh copy of packJPG internally (it
+// uses packJPG's codec for its own purposes) -- since that embedded copy has
+// the SAME model_s/model_b classes (and the same pjglib_* function names) as
+// both packMP3's own code and the packJPG copy vendored just above, the
+// prebuilt libpackpng.a under vendor/packpng/{,win64,win32}/ has ITS OWN,
+// separate `objcopy --redefine-syms` pass applied (distinct rename targets
+// from packJPG's own map, so all three copies stay unique) -- see
+// vendor/packpng/redefine_map*.txt. Confirmed via a real link + round-trip
+// smoke test on Linux, win-x64 and win-x86 before trusting this. packpng.h
+// has no EXPORT/__declspec branch, so no extra guard needed beyond the
+// existing BUILD_LIB/BUILD_DLL one above.
+#include "vendor/packpng-src/source/packpng.h"
 #endif
 
 #if defined BUILD_DLL // define BUILD_LIB from the compiler options if you want to compile a DLL!
@@ -424,20 +439,25 @@ INTERN int  action     = A_COMPRESS;// what to do with MP3/PMP files
 	global variables: info about program
 	----------------------------------------------- */
 
-INTERN const unsigned char appversion = 30;
+INTERN const unsigned char appversion = 31;
 // appversion_legacy_min stays at 20 (unchanged since the v2.0 entropy-model
 // break) -- v3.0's own additions (packMP2 Layer II backend, packJPG APIC
-// recompression) are purely additive/gated on pmp_archive_version, same
-// precedent as the v1.3 MPEG-version-bits gate, so v2.0 archives still
-// decode unaffected. The major-number jump here is a product-milestone
-// label (bundles a full release's worth of features), not a claim that the
-// wire format broke -- unlike 1.x->2.0, which genuinely did and moved the
-// floor with it.
+// recompression) and v3.1's (packPNG APIC recompression) are purely
+// additive/gated on pmp_archive_version, same precedent as the v1.3
+// MPEG-version-bits gate, so v2.0 archives still decode unaffected. Bumping
+// this (not just adding a gated bit under the existing value) matters here:
+// pre1-pre5 binaries already circulating hardcode appversion==30 and, per
+// the `hcode > appversion` check below, correctly *refuse* any archive
+// stamped with a version they don't recognize -- if this feature reused
+// version 30, an old binary reading a new PNG-cover archive would
+// misinterpret the new header bit as always-0 (no check gates it) and try
+// to decode packPNG bytes with pjglib, silent wrong behavior. Bumping to 31
+// makes old binaries cleanly reject new archives instead.
 INTERN const unsigned char appversion_legacy_min = 20;
 INTERN const char*  subversion   = "";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "07/16/2026";
+INTERN const char*  versiondate  = "07/18/2026";
 INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";
@@ -466,6 +486,12 @@ INTERN const char   l2_magic[]  = { 'M', '2' };	// separate container for Layer 
 // could mean memory corruption inside pjglib that a round-trip check can't
 // catch after the fact -- serialize unconditionally rather than assume.
 INTERN std::mutex pjg_mutex;
+
+// Same situation as pjg_mutex above, for packPNG: packpng_compress_mem/
+// packpng_decompress_mem's concurrent-call thread-safety is unverified
+// (packpng_set_threads only controls the internal worker pool for a single
+// call), so serialize unconditionally -- same cheap-insurance precedent.
+INTERN std::mutex packpng_mutex;
 #endif
 
 // Recipe for splicing a recompressed cover back into data_before on decode
@@ -478,7 +504,13 @@ INTERN std::mutex pjg_mutex;
 THREAD_LOCAL bool apic_present  = false;
 THREAD_LOCAL int  apic_offset   = 0;	// byte offset within data_before of the blob
 THREAD_LOCAL int  apic_orig_len = 0;	// original JPEG length
-THREAD_LOCAL int  apic_pjg_len  = 0;	// stored (packJPG-compressed) length
+THREAD_LOCAL int  apic_pjg_len  = 0;	// stored (packJPG/packPNG-compressed) length
+// v3.1: which backend produced/should decode the record above -- packJPG
+// (false, the original v2.1 feature) or packPNG (true, new). Meaningless
+// unless apic_present is true; gated on pmp_archive_version >= 31 on read
+// (see pmp_read_header) so pre-v3.1 archives (which never set this) always
+// take the packJPG path, matching their only-ever-possible actual content.
+THREAD_LOCAL bool apic_is_png   = false;
 INTERN const char   pmc_magic[] = { 'M', 'K' };	// chunked container: K independent "MS" sub-streams
 #define MAX_CHUNKS       64				// upper bound on -k
 #define MIN_FRAMES_CHUNK 16				// don't split below this many frames per chunk
@@ -1533,8 +1565,8 @@ INTERN void show_help( void )
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "%s -- lossless MPEG audio compression (MP3 + MP2 + MP1). Typical reduction: ~16%%.\n", appname );
 	fprintf( msgout, "Compresses MP3/MP2/MP1 files to .pm3 archives and decompresses them back,\n" );
-	fprintf( msgout, "with bit-for-bit identical reconstruction. Embedded ID3v2 JPEG cover art\n" );
-	fprintf( msgout, "is losslessly recompressed automatically, no flag needed.\n" );
+	fprintf( msgout, "with bit-for-bit identical reconstruction. Embedded ID3v2 JPEG/PNG cover\n" );
+	fprintf( msgout, "art is losslessly recompressed automatically, no flag needed.\n" );
 	fprintf( msgout, "\n" );
 	fprintf( msgout, "Website: %s\n", website );
 	fprintf( msgout, "\n" );
@@ -2168,6 +2200,7 @@ INTERN bool reset_buffers( void )
 	// unconditionally, so they must not carry over.
 	apic_present = false;
 	apic_offset = apic_orig_len = apic_pjg_len = 0;
+	apic_is_png = false;
 	if ( gg_context[0] != NULL ) free ( gg_context[0] );
 	if ( gg_context[1] != NULL ) free ( gg_context[1] );
 	gg_context[0] = NULL;
@@ -4204,6 +4237,12 @@ INTERN inline bool pmp_write_header( iostream* str )
 	// readers ignore bit 4; v2.1+ reads it and, if set, an extra raw record
 	// right after this header (see pmp_read_header/uncompress_pmp).
 	header[3] |= ( apic_present ? 1 : 0 ) << 4; // APIC recompressed
+	// v3.1: which backend recompressed the cover -- 0 (packJPG, the only
+	// possibility on any archive from before this bit existed) or 1
+	// (packPNG). Meaningless unless bit 4 is set; old (< v3.1) readers
+	// ignore bit 3 entirely, which is safe since they never produced an
+	// archive with it set to begin with.
+	header[3] |= ( apic_is_png ? 1 : 0 ) << 3; // APIC backend is packPNG
 	// v1.3: MPEG version (2 bits) in the previously-free low bits, so MPEG-2/2.5
 	// Layer III can be reconstructed. Old v1.1/v1.2 readers ignore byte 3 low
 	// bits; v1.3+ reads them only when the archive version says they exist.
@@ -4280,6 +4319,10 @@ INTERN inline bool pmp_read_header( iostream* str )
 	// v2.1+ archives may carry a recompressed cover-art record right after
 	// this header; older readers/archives simply never see the bit set.
 	apic_present	= ( pmp_archive_version >= 21 ) && ( (header[3]>>4)&0x1 );
+	// v3.1+: which backend recompressed the cover (packJPG vs packPNG).
+	// Gated the same way -- an archive from before this bit existed can
+	// only ever mean packJPG, so pre-v3.1 archives correctly default false.
+	apic_is_png	= ( pmp_archive_version >= 31 ) && ( (header[3]>>3)&0x1 );
 
 	// set nframes known i_variables.
 	// v1.3+ archives store the MPEG version in byte 3 low bits; older archives
@@ -4631,12 +4674,115 @@ INTERN bool id3_find_apic_jpeg( const unsigned char* tag, int tag_size, int* img
 	return false;
 }
 
-// Encode side: on success, allocates *modified (caller frees with free()) --
-// a copy of data_before with the found JPEG replaced by a smaller packJPG
-// blob -- and sets apic_present/apic_offset/apic_orig_len/apic_pjg_len.
-// Never modifies data_before itself. Leaves apic_present false and
-// *modified/*modified_size untouched (NULL/0) on any failure to recompress.
-INTERN bool apic_try_recompress( unsigned char** modified, int* modified_size )
+// Same as id3_find_apic_jpeg above, but for a PNG cover (packPNG backend).
+// Deliberately a near-duplicate rather than a shared frame-walker: keeps the
+// already-shipped JPEG path (and every edge case it was verified against)
+// completely untouched. A tag with both a JPEG and a PNG frame is handled
+// naturally by the caller trying this function only after id3_find_apic_jpeg
+// -- each search only ever matches its own format's frame, since a
+// wrong-MIME/wrong-magic frame is skipped (not a bail), same as the JPEG
+// version.
+INTERN bool id3_find_apic_png( const unsigned char* tag, int tag_size, int* img_off, int* img_len )
+{
+	if ( tag_size < 10 || memcmp( tag, "ID3", 3 ) != 0 ) return false;
+	int major = tag[3];
+	if ( major != 2 && major != 3 && major != 4 ) return false;
+	unsigned char tagflags = tag[5];
+	if ( tagflags & 0x80 ) return false;              // unsynchronisation -- bail
+	if ( major >= 3 && ( tagflags & 0x40 ) ) return false; // extended header -- bail
+	if ( major == 4 && ( tagflags & 0x10 ) ) return false; // footer -- bail
+
+	unsigned int body_size = ( (unsigned int)(tag[6]&0x7F) << 21 ) | ( (unsigned int)(tag[7]&0x7F) << 14 )
+	                        | ( (unsigned int)(tag[8]&0x7F) <<  7 ) | (unsigned int)(tag[9]&0x7F);
+	if ( body_size == 0 || 10 + (long long) body_size > tag_size ) return false;
+	int end = 10 + (int) body_size;
+
+	int id_len   = ( major == 2 ) ? 3 : 4;
+	int size_len = ( major == 2 ) ? 3 : 4;
+	int flag_len = ( major == 2 ) ? 0 : 2;
+	int hdr_len  = id_len + size_len + flag_len;
+
+	int pos = 10;
+	while ( pos + hdr_len <= end ) {
+		if ( tag[pos] == 0 ) break; // padding reached
+
+		unsigned int fsize;
+		if ( major == 2 )
+			fsize = ( (unsigned int)tag[pos+3] << 16 ) | ( (unsigned int)tag[pos+4] << 8 ) | (unsigned int)tag[pos+5];
+		else if ( major == 3 )
+			fsize = ( (unsigned int)tag[pos+4] << 24 ) | ( (unsigned int)tag[pos+5] << 16 )
+			      | ( (unsigned int)tag[pos+6] <<  8 ) | (unsigned int)tag[pos+7];
+		else // major == 4, syncsafe
+			fsize = ( (unsigned int)(tag[pos+4]&0x7F) << 21 ) | ( (unsigned int)(tag[pos+5]&0x7F) << 14 )
+			      | ( (unsigned int)(tag[pos+6]&0x7F) <<  7 ) | (unsigned int)(tag[pos+7]&0x7F);
+
+		int frame_body_off = pos + hdr_len;
+		if ( (long long) frame_body_off + fsize > end ) return false; // structurally broken -- distrust whole tag
+
+		bool is_pic = ( major == 2 ) ? ( memcmp( tag+pos, "PIC", 3 ) == 0 )
+		                             : ( memcmp( tag+pos, "APIC", 4 ) == 0 );
+		if ( is_pic && fsize > 0 ) {
+			bool skip_this_frame = false;
+			if ( flag_len == 2 ) {
+				unsigned int fflags = ( (unsigned int)tag[pos+id_len+size_len] << 8 ) | tag[pos+id_len+size_len+1];
+				if ( fflags != 0 ) skip_this_frame = true; // compressed/encrypted/grouped/etc -- skip, don't bail
+			}
+			if ( !skip_this_frame ) {
+				const unsigned char* body = tag + frame_body_off;
+				int blen = (int) fsize;
+				int bp = 0;
+				if ( blen >= 1 ) {
+					int encoding = body[0];
+					bp = 1;
+					if ( encoding >= 0 && encoding <= 3 ) {
+						bool is_png_type = false;
+						bool fmt_ok = true;
+						if ( major == 2 ) {
+							if ( bp + 3 <= blen ) { is_png_type = id3_ieq( body+bp, "PNG", 3 ); bp += 3; }
+							else fmt_ok = false;
+						} else {
+							int mime_len = id3_skip_text( body+bp, blen-bp, 0 ); // MIME: always single-null Latin1
+							if ( mime_len < 0 ) fmt_ok = false;
+							else {
+								int mstr_len = mime_len - 1;
+								is_png_type = ( mstr_len == 9 && id3_ieq( body+bp, "image/png", 9 ) );
+								bp += mime_len;
+							}
+						}
+						if ( fmt_ok && bp + 1 <= blen ) {
+							bp += 1; // picture-type byte
+							int desc_len = id3_skip_text( body+bp, blen-bp, encoding );
+							if ( desc_len >= 0 ) {
+								bp += desc_len;
+								int imglen_here = blen - bp;
+								// PNG signature: 89 50 4E 47 0D 0A 1A 0A
+								if ( is_png_type && imglen_here >= 8
+								     && body[bp] == 0x89 && body[bp+1] == 0x50 && body[bp+2] == 0x4E && body[bp+3] == 0x47
+								     && body[bp+4] == 0x0D && body[bp+5] == 0x0A && body[bp+6] == 0x1A && body[bp+7] == 0x0A ) {
+									*img_off = frame_body_off + bp;
+									*img_len = imglen_here;
+									return true; // first qualifying frame wins, stop here
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		pos = frame_body_off + fsize;
+	}
+	return false;
+}
+
+// Encode side, JPEG: on success, allocates *modified (caller frees with
+// free()) -- a copy of data_before with the found JPEG replaced by a
+// smaller packJPG blob -- and sets apic_present/apic_offset/apic_orig_len/
+// apic_pjg_len. Never modifies data_before itself. Leaves apic_present
+// false and *modified/*modified_size untouched (NULL/0) on any failure to
+// recompress. (Original, unmodified apic_try_recompress body from the
+// v2.1 feature -- just renamed so a thin dispatcher below can try this
+// first, then fall through to the PNG backend.)
+INTERN bool apic_try_recompress_jpeg( unsigned char** modified, int* modified_size )
 {
 	int img_off, img_len;
 	if ( !id3_find_apic_jpeg( data_before, data_before_size, &img_off, &img_len ) ) return false;
@@ -4677,6 +4823,7 @@ INTERN bool apic_try_recompress( unsigned char** modified, int* modified_size )
 	free( pjg_out );
 
 	apic_present  = true;
+	apic_is_png   = false;
 	apic_offset   = img_off;
 	apic_orig_len = img_len;
 	apic_pjg_len  = (int) pjg_len;
@@ -4685,10 +4832,74 @@ INTERN bool apic_try_recompress( unsigned char** modified, int* modified_size )
 	return true;
 }
 
+// Encode side, PNG: mirrors apic_try_recompress_jpeg exactly, using
+// packPNG's packpng_compress_mem/packpng_decompress_mem in place of
+// pjglib_init_streams/pjglib_convert_stream2mem. Same self-verify-before-
+// commit discipline, same strict-shrink requirement.
+INTERN bool apic_try_recompress_png( unsigned char** modified, int* modified_size )
+{
+	int img_off, img_len;
+	if ( !id3_find_apic_png( data_before, data_before_size, &img_off, &img_len ) ) return false;
+
+	unsigned char* ppg_out = NULL; size_t ppg_len = 0;
+	int rc;
+	{
+		std::lock_guard<std::mutex> lk( packpng_mutex );
+		rc = packpng_compress_mem( data_before + img_off, (size_t) img_len, "cover.png",
+		                           &ppg_out, &ppg_len, PACKPNG_TCIP );
+	}
+	if ( rc != 0 || ppg_out == NULL || (int) ppg_len >= img_len ) {
+		if ( ppg_out != NULL ) packpng_free( ppg_out );
+		return false; // packPNG failed, or didn't actually shrink it -- not worth it
+	}
+
+	// self-verify: decompress right back and compare bit-for-bit before
+	// ever committing to using this -- never trust a single conversion.
+	unsigned char* verify_out = NULL; size_t verify_len = 0;
+	int vrc;
+	{
+		std::lock_guard<std::mutex> lk( packpng_mutex );
+		vrc = packpng_decompress_mem( ppg_out, ppg_len, &verify_out, &verify_len );
+	}
+	bool roundtrip_ok = vrc == 0 && verify_out != NULL && verify_len == (size_t) img_len
+	                  && memcmp( verify_out, data_before + img_off, img_len ) == 0;
+	if ( verify_out != NULL ) packpng_free( verify_out );
+	if ( !roundtrip_ok ) { packpng_free( ppg_out ); return false; }
+
+	int new_size = data_before_size - img_len + (int) ppg_len;
+	unsigned char* buf = (unsigned char*) malloc( new_size > 0 ? new_size : 1 );
+	if ( buf == NULL ) { packpng_free( ppg_out ); return false; }
+	memcpy( buf, data_before, img_off );
+	memcpy( buf + img_off, ppg_out, ppg_len );
+	memcpy( buf + img_off + ppg_len, data_before + img_off + img_len, data_before_size - img_off - img_len );
+	packpng_free( ppg_out );
+
+	apic_present  = true;
+	apic_is_png   = true;
+	apic_offset   = img_off;
+	apic_orig_len = img_len;
+	apic_pjg_len  = (int) ppg_len;
+	*modified = buf;
+	*modified_size = new_size;
+	return true;
+}
+
+// Tries the JPEG backend first (the original, proven feature); if the tag
+// has no qualifying JPEG cover, falls through to the PNG backend. At most
+// one of the two can ever succeed for a given file (each only matches its
+// own format's frame).
+INTERN bool apic_try_recompress( unsigned char** modified, int* modified_size )
+{
+	if ( apic_try_recompress_jpeg( modified, modified_size ) ) return true;
+	return apic_try_recompress_png( modified, modified_size );
+}
+
 // Decode side: reverses apic_try_recompress. Replaces data_before (and
-// data_before_size) with a freshly allocated buffer where the packJPG blob
-// at apic_offset is expanded back to the original JPEG bytes. Bounds-checks
-// the (potentially corrupt/tampered) recipe fields before touching memory.
+// data_before_size) with a freshly allocated buffer where the recompressed
+// blob at apic_offset is expanded back to the original image bytes, via
+// packJPG or packPNG depending on apic_is_png. Bounds-checks the
+// (potentially corrupt/tampered) recipe fields before touching memory --
+// shared between both backends, since the splice math is format-agnostic.
 INTERN bool apic_reconstruct( void )
 {
 	if ( apic_offset < 0 || apic_pjg_len < 0 || apic_orig_len < 0
@@ -4698,34 +4909,56 @@ INTERN bool apic_reconstruct( void )
 		return false;
 	}
 
-	unsigned char* jpg_out = NULL; unsigned int jpg_len = 0;
-	char msg[ PJG_MSG_SIZE ] = {0};
-	bool ok;
-	{
-		std::lock_guard<std::mutex> lk( pjg_mutex );
-		pjglib_init_streams( (void*)( data_before + apic_offset ), 1, apic_pjg_len, NULL, 1 );
-		ok = pjglib_convert_stream2mem( &jpg_out, &jpg_len, msg );
-	}
-	if ( !ok || jpg_out == NULL || jpg_len != (unsigned int) apic_orig_len ) {
-		if ( jpg_out != NULL ) free( jpg_out );
-		snprintf( errormessage, MSG_SIZE, "packJPG decode failed: %s", msg );
-		errorlevel = 2;
-		return false;
+	unsigned char* img_out = NULL;
+	int img_len = 0;
+
+	if ( apic_is_png ) {
+		unsigned char* ppg_out = NULL; size_t ppg_len = 0;
+		int rc;
+		{
+			std::lock_guard<std::mutex> lk( packpng_mutex );
+			rc = packpng_decompress_mem( data_before + apic_offset, (size_t) apic_pjg_len, &ppg_out, &ppg_len );
+		}
+		if ( rc != 0 || ppg_out == NULL || ppg_len != (size_t) apic_orig_len ) {
+			if ( ppg_out != NULL ) packpng_free( ppg_out );
+			snprintf( errormessage, MSG_SIZE, "packPNG decode failed: %s", packpng_last_error() );
+			errorlevel = 2;
+			return false;
+		}
+		img_out = ppg_out;
+		img_len = (int) ppg_len;
+	} else {
+		unsigned char* jpg_out = NULL; unsigned int jpg_len = 0;
+		char msg[ PJG_MSG_SIZE ] = {0};
+		bool ok;
+		{
+			std::lock_guard<std::mutex> lk( pjg_mutex );
+			pjglib_init_streams( (void*)( data_before + apic_offset ), 1, apic_pjg_len, NULL, 1 );
+			ok = pjglib_convert_stream2mem( &jpg_out, &jpg_len, msg );
+		}
+		if ( !ok || jpg_out == NULL || jpg_len != (unsigned int) apic_orig_len ) {
+			if ( jpg_out != NULL ) free( jpg_out );
+			snprintf( errormessage, MSG_SIZE, "packJPG decode failed: %s", msg );
+			errorlevel = 2;
+			return false;
+		}
+		img_out = jpg_out;
+		img_len = (int) jpg_len;
 	}
 
 	int new_size = data_before_size - apic_pjg_len + apic_orig_len;
 	unsigned char* buf = (unsigned char*) malloc( new_size > 0 ? new_size : 1 );
 	if ( buf == NULL ) {
-		free( jpg_out );
+		if ( apic_is_png ) packpng_free( img_out ); else free( img_out );
 		snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 		errorlevel = 2;
 		return false;
 	}
 	memcpy( buf, data_before, apic_offset );
-	memcpy( buf + apic_offset, jpg_out, apic_orig_len );
+	memcpy( buf + apic_offset, img_out, img_len );
 	memcpy( buf + apic_offset + apic_orig_len, data_before + apic_offset + apic_pjg_len,
 	        data_before_size - apic_offset - apic_pjg_len );
-	free( jpg_out );
+	if ( apic_is_png ) packpng_free( img_out ); else free( img_out );
 
 	free( data_before );
 	data_before = buf;
