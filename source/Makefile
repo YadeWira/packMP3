@@ -211,9 +211,9 @@ deb: linux-x64
 	cp bin/$(TARGET)_linux_x64 $(DEBSTAGE)/usr/bin/packmp3
 	chmod 755 $(DEBSTAGE) $(DEBSTAGE)/usr $(DEBSTAGE)/usr/bin $(DEBSTAGE)/usr/bin/packmp3
 	cp ../packaging/debian/control $(DEBSTAGE)/DEBIAN/control
-	$(eval DEBVER := $(shell awk -F': ' '/^Version:/{print $$2}' $(DEBSTAGE)/DEBIAN/control))
-	fakeroot dpkg-deb --build $(DEBSTAGE) bin/packmp3_$(DEBVER)_amd64.deb
-	@echo "[OK] bin/packmp3_$(DEBVER)_amd64.deb"
+	debver=$$(awk -F': ' '/^Version:/{print $$2}' $(DEBSTAGE)/DEBIAN/control); \
+	fakeroot dpkg-deb --build $(DEBSTAGE) bin/packmp3_$${debver}_amd64.deb; \
+	echo "[OK] bin/packmp3_$${debver}_amd64.deb"
 
 win-x64: bin
 	$(WIN64) $(CROSS_FLAGS) -o bin/$(TARGET)_win_x64.exe $(CXXSRC) -s $(CROSS_LD) \
