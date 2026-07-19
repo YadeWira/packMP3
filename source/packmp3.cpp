@@ -1941,7 +1941,33 @@ INTERN bool check_file( void )
 		{
 			unsigned char pk[ 8192 ];
 			str_in->rewind();
-			int pn = str_in->read( pk, 1, sizeof(pk) );
+			int pn0 = str_in->read( pk, 1, sizeof(pk) );
+			// skip a leading ID3v2 tag before scanning for the MPEG frame sync.
+			// A large embedded cover (APIC) can push the first real audio frame
+			// well past this fixed peek window -- without this, the scan below
+			// runs over raw tag/image bytes and a coincidental FFEx-looking
+			// pattern in there can misroute the file to the wrong layer/codec
+			// (found via a real 9MB mp3 with a ~760KB cover art tag).
+			int skip = 0;
+			if ( pn0 >= 10 && memcmp( pk, "ID3", 3 ) == 0 ) {
+				bool footer = BITN( pk[5], 4 ) == 1;
+				int sz = ( ( pk[6] & 0x7F ) << 21 ) | ( ( pk[7] & 0x7F ) << 14 ) |
+				         ( ( pk[8] & 0x7F ) <<  7 ) |   ( pk[9] & 0x7F );
+				int tagsize = 10 + sz + ( footer ? 10 : 0 );
+				int fsize = str_in->getsize();
+				if ( tagsize > 0 && tagsize <= fsize ) skip = tagsize;
+			}
+			int pn = pn0;
+			if ( skip > 0 ) {
+				unsigned char discard[ 8192 ];
+				for ( int remaining = skip; remaining > 0; ) {
+					int chunk = ( remaining < (int) sizeof(discard) ) ? remaining : (int) sizeof(discard);
+					int got = str_in->read( discard, 1, chunk );
+					if ( got <= 0 ) break;
+					remaining -= got;
+				}
+				pn = str_in->read( pk, 1, sizeof(pk) );
+			}
 			str_in->rewind();
 			for ( int p = 0; p + 4 <= pn; p++ ) {
 				if ( pk[p] != 0xFF || ( pk[p+1] & 0xE0 ) != 0xE0 ) continue;
