@@ -524,11 +524,14 @@ THREAD_LOCAL bool apic_is_png   = false;
 // stale state before the NEXT file), which clears apic_present et al before
 // the per-file result line ever gets printed -- these snapshot the values
 // right after compress_mp3 runs (see process_file), so the UI can still show
-// cover-art stats for the file that was just processed.
+// cover-art stats for the file that was just processed. CLI-only, like the
+// rest of process_ui()'s display logic -- lib builds never reference these.
+#if !defined(BUILD_LIB)
 THREAD_LOCAL bool apic_present_disp  = false;
 THREAD_LOCAL bool apic_is_png_disp   = false;
 THREAD_LOCAL int  apic_orig_len_disp = 0;
 THREAD_LOCAL int  apic_pjg_len_disp  = 0;
+#endif
 INTERN const char   pmc_magic[] = { 'M', 'K' };	// chunked container: K independent "MS" sub-streams
 #define MAX_CHUNKS       64				// upper bound on -k
 #define MIN_FRAMES_CHUNK 16				// don't split below this many frames per chunk
@@ -4622,19 +4625,6 @@ INTERN int id3_skip_text( const unsigned char* p, int remain, int encoding )
 	return -1;
 }
 
-// Case-insensitive ASCII compare, exactly len bytes (no null-termination
-// assumed on `a`, which points into the raw tag buffer).
-INTERN bool id3_ieq( const unsigned char* a, const char* b, int len )
-{
-	for ( int i = 0; i < len; i++ ) {
-		unsigned char ca = a[i], cb = (unsigned char) b[i];
-		if ( ca >= 'A' && ca <= 'Z' ) ca += 32;
-		if ( cb >= 'A' && cb <= 'Z' ) cb += 32;
-		if ( ca != cb ) return false;
-	}
-	return true;
-}
-
 // Finds a single qualifying JPEG cover frame in an ID3v2 tag (`tag`,
 // `tag_size` bytes -- i.e. data_before). On success returns true with
 // *img_off/*img_len set to the byte range of the raw JPEG data within `tag`.
@@ -4643,9 +4633,12 @@ INTERN bool id3_ieq( const unsigned char* a, const char* b, int len )
 // header or footer (not accounted for in this frame walk), or a frame whose
 // declared size would run past the tag body (real structural inconsistency
 // -- distrust the whole parse, not just that frame). A frame with nonzero
-// flags, wrong MIME/format, or non-JPEG payload is simply skipped, not a
-// bail -- only the first frame that fully qualifies is ever used, everything
-// else (including any other APIC/PIC frames) is left untouched.
+// flags or non-JPEG payload is simply skipped, not a bail -- only the first
+// frame that fully qualifies is ever used, everything else (including any
+// other APIC/PIC frames) is left untouched. The MIME/format-type field
+// isn't checked (only structurally skipped) -- acceptance is decided purely
+// by the image's own magic bytes (JPEG SOI), so a mislabeled MIME doesn't
+// cause a real cover to be missed.
 INTERN bool id3_find_apic_jpeg( const unsigned char* tag, int tag_size, int* img_off, int* img_len )
 {
 	if ( tag_size < 10 || memcmp( tag, "ID3", 3 ) != 0 ) return false;
@@ -4699,20 +4692,20 @@ INTERN bool id3_find_apic_jpeg( const unsigned char* tag, int tag_size, int* img
 					int encoding = body[0];
 					bp = 1;
 					if ( encoding >= 0 && encoding <= 3 ) {
-						bool is_jpeg_type = false;
+						// MIME/format-type field is structurally skipped (its length
+						// still has to be parsed to find where the image data starts)
+						// but its VALUE is no longer checked -- some taggers write a
+						// mismatched MIME (e.g. a real PNG stored as "image/jpeg");
+						// trusting the image's own magic bytes below catches those
+						// instead of silently missing them.
 						bool fmt_ok = true;
 						if ( major == 2 ) {
-							if ( bp + 3 <= blen ) { is_jpeg_type = id3_ieq( body+bp, "JPG", 3 ); bp += 3; }
+							if ( bp + 3 <= blen ) bp += 3;
 							else fmt_ok = false;
 						} else {
 							int mime_len = id3_skip_text( body+bp, blen-bp, 0 ); // MIME: always single-null Latin1
 							if ( mime_len < 0 ) fmt_ok = false;
-							else {
-								int mstr_len = mime_len - 1;
-								is_jpeg_type = ( mstr_len == 10 && id3_ieq( body+bp, "image/jpeg", 10 ) )
-								            || ( mstr_len == 9  && id3_ieq( body+bp, "image/jpg", 9 ) );
-								bp += mime_len;
-							}
+							else bp += mime_len;
 						}
 						if ( fmt_ok && bp + 1 <= blen ) {
 							bp += 1; // picture-type byte
@@ -4720,7 +4713,7 @@ INTERN bool id3_find_apic_jpeg( const unsigned char* tag, int tag_size, int* img
 							if ( desc_len >= 0 ) {
 								bp += desc_len;
 								int imglen_here = blen - bp;
-								if ( is_jpeg_type && imglen_here >= 4
+								if ( imglen_here >= 4
 								     && body[bp] == 0xFF && body[bp+1] == 0xD8 ) {
 									*img_off = frame_body_off + bp;
 									*img_len = imglen_here;
@@ -4743,8 +4736,10 @@ INTERN bool id3_find_apic_jpeg( const unsigned char* tag, int tag_size, int* img
 // completely untouched. A tag with both a JPEG and a PNG frame is handled
 // naturally by the caller trying this function only after id3_find_apic_jpeg
 // -- each search only ever matches its own format's frame, since a
-// wrong-MIME/wrong-magic frame is skipped (not a bail), same as the JPEG
-// version.
+// wrong-magic frame is skipped (not a bail), same as the JPEG version. The
+// MIME tag isn't checked at all (by either function) -- only the image's
+// own magic bytes decide the format, so a mislabeled MIME (real PNG stored
+// as "image/jpeg", or vice versa) still gets caught correctly.
 INTERN bool id3_find_apic_png( const unsigned char* tag, int tag_size, int* img_off, int* img_len )
 {
 	if ( tag_size < 10 || memcmp( tag, "ID3", 3 ) != 0 ) return false;
@@ -4798,19 +4793,17 @@ INTERN bool id3_find_apic_png( const unsigned char* tag, int tag_size, int* img_
 					int encoding = body[0];
 					bp = 1;
 					if ( encoding >= 0 && encoding <= 3 ) {
-						bool is_png_type = false;
+						// MIME/format-type value no longer checked, same rationale
+						// as id3_find_apic_jpeg above -- trust the image's own
+						// magic bytes, not a possibly-mislabeled MIME tag.
 						bool fmt_ok = true;
 						if ( major == 2 ) {
-							if ( bp + 3 <= blen ) { is_png_type = id3_ieq( body+bp, "PNG", 3 ); bp += 3; }
+							if ( bp + 3 <= blen ) bp += 3;
 							else fmt_ok = false;
 						} else {
 							int mime_len = id3_skip_text( body+bp, blen-bp, 0 ); // MIME: always single-null Latin1
 							if ( mime_len < 0 ) fmt_ok = false;
-							else {
-								int mstr_len = mime_len - 1;
-								is_png_type = ( mstr_len == 9 && id3_ieq( body+bp, "image/png", 9 ) );
-								bp += mime_len;
-							}
+							else bp += mime_len;
 						}
 						if ( fmt_ok && bp + 1 <= blen ) {
 							bp += 1; // picture-type byte
@@ -4819,7 +4812,7 @@ INTERN bool id3_find_apic_png( const unsigned char* tag, int tag_size, int* img_
 								bp += desc_len;
 								int imglen_here = blen - bp;
 								// PNG signature: 89 50 4E 47 0D 0A 1A 0A
-								if ( is_png_type && imglen_here >= 8
+								if ( imglen_here >= 8
 								     && body[bp] == 0x89 && body[bp+1] == 0x50 && body[bp+2] == 0x4E && body[bp+3] == 0x47
 								     && body[bp+4] == 0x0D && body[bp+5] == 0x0A && body[bp+6] == 0x1A && body[bp+7] == 0x0A ) {
 									*img_off = frame_body_off + bp;

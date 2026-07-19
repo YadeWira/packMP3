@@ -164,7 +164,11 @@ artwork further, with no extra flag needed. It's self-verifying (the
 recompressed image is decompressed and byte-compared before ever being
 used) and silently falls back to the ordinary generic encoding for
 anything unusual — other image formats (GIF, BMP, etc.), unsynchronised
-tags, multiple pictures, or any parsing surprise. When it happens, the
+tags, multiple pictures, or any parsing surprise. Format detection goes
+by the image's own magic bytes (JPEG SOI / PNG signature), not the
+ID3v2 MIME tag — a real cover mislabeled with the wrong MIME (some
+taggers get this wrong) is still found and recompressed correctly.
+When it happens, the
 per-file result line shows the cover's own before/after size:
 
 ```
