@@ -457,13 +457,13 @@ INTERN const unsigned char appversion = 31;
 // makes old binaries cleanly reject new archives instead.
 INTERN const unsigned char appversion_legacy_min = 20;
 // Displayed product version, deliberately decoupled from appversion above:
-// v3.0 LTS hasn't shipped as a stable/final tag yet (still pre-releases),
-// so the banner/help stay "v3.0" through this whole pre-release series even
-// though appversion keeps incrementing (30->31 here) for the wire-format
-// compat gate. Bump these only when the LTS itself actually ships as 3.x.
+// v3.0 LTS shipped as the stable/final tag (v3.0, then v3.0a for the
+// packMP2 v0.8 dependency bump -- see subversion below). appversion is
+// the separate wire-format compat stamp and does not have to match this
+// 1:1 (it's already ahead, at 31, from the v3.0 cycle's own additions).
 INTERN const unsigned char displayversion_major = 3;
 INTERN const unsigned char displayversion_minor = 0;
-INTERN const char*  subversion   = "";
+INTERN const char*  subversion   = "a";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
 INTERN const char*  versiondate  = "07/18/2026";
