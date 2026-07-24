@@ -139,7 +139,7 @@ class model_s
 	inline void ensure_context_ready( table_s* context );
 	inline void bit_add( table_s* context, int i, int delta );
 	inline unsigned int bit_prefix( table_s* context, int i );
-	inline int bit_find_kth( table_s* context, unsigned int target );
+	inline int bit_find_kth( table_s* context, unsigned int target, unsigned int* out_prefix );
 	inline void bit_rebuild( table_s* context );
 	inline unsigned int fastpath_scale( table_s* context );
 	inline void lazy_populate_scoreboard( table_s* context );

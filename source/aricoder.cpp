@@ -610,8 +610,8 @@ int model_s::convert_symbol_to_int( int count, symbol *s )
 		// CDF is descending (low symbol index = high count range), while the
 		// Fenwick tree is an ascending prefix sum -- invert via grand_total.
 		unsigned int target = grand_total - 1 - ucount;
-		int sym = bit_find_kth( context, target );
-		unsigned int prefix_sym  = bit_prefix( context, sym );
+		unsigned int prefix_sym;
+		int sym = bit_find_kth( context, target, &prefix_sym );
 		unsigned int prefix_sym1 = prefix_sym + context->counts[ sym ];
 		s->low_count  = grand_total - prefix_sym1;
 		s->high_count = grand_total - prefix_sym;
@@ -673,19 +673,24 @@ unsigned int model_s::bit_prefix( table_s* context, int i )
 }
 
 // standard Fenwick "find_kth": returns the largest sym such that
-// prefix_sum(sym) <= target < prefix_sum(sym+1)
-int model_s::bit_find_kth( table_s* context, unsigned int target )
+// prefix_sum(sym) <= target < prefix_sum(sym+1). Also hands back
+// prefix_sum(sym) via out_prefix (it falls out of the descent for free --
+// original_target minus whatever's left once the loop settles on pos), so
+// the caller never needs a separate bit_prefix() call.
+int model_s::bit_find_kth( table_s* context, unsigned int target, unsigned int* out_prefix )
 {
+	unsigned int remaining = target;
 	int pos = 0;
 	int logn = 1;
 	while ( ( logn << 1 ) <= max_symbol ) logn <<= 1;
 	for ( int pw = logn; pw > 0; pw >>= 1 ) {
 		int next = pos + pw;
-		if ( next <= max_symbol && context->bit[ next ] <= target ) {
+		if ( next <= max_symbol && context->bit[ next ] <= remaining ) {
 			pos = next;
-			target -= context->bit[ next ];
+			remaining -= context->bit[ next ];
 		}
 	}
+	*out_prefix = target - remaining;
 	return pos;
 }
 
