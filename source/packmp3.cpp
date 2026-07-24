@@ -2068,6 +2068,13 @@ INTERN bool check_file( void )
 			}
 			int pn = pn0;
 			if ( skip > 0 ) {
+				// rewind first: the pn0 read above already advanced the stream to
+				// 8192, so discarding `skip` bytes from there would land the peek
+				// window at 8192+skip -- somewhere mid-audio, where a false sync
+				// decides the routing. (That was the real defect behind a v3.0a
+				// file misrouting to the Layer II codec even though its ID3v2
+				// tag size was parsed correctly.)
+				str_in->rewind();
 				unsigned char discard[ 8192 ];
 				for ( int remaining = skip; remaining > 0; ) {
 					int chunk = ( remaining < (int) sizeof(discard) ) ? remaining : (int) sizeof(discard);
