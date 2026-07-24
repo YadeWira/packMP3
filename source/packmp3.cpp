@@ -107,6 +107,16 @@ extern "C" { int _dowildcard = -1; }
 // files concurrently without data races. Config/shared state stays plain static.
 #define THREAD_LOCAL static thread_local
 
+// max_symbol/max_context/max_order/max_count (the 4 params below) are all
+// format-bound, not runtime configuration: max_count controls exactly when
+// rescale_table() reshapes a context's counts, so encoder and decoder MUST
+// agree on it bit-for-bit or the model states diverge (confirmed: decoding
+// an archive made with a different max_count segfaults). Don't tune any of
+// these in isolation -- doing so silently breaks every already-published
+// archive. Only touch them alongside an appversion bump + a version-gated
+// runtime branch (same pattern as the PNG-cover header bit), and only when
+// the win is worth that cost (measured max_count sweep on mod_abv: best
+// case ~-0.03% ratio -- not worth it on its own).
 #define INIT_MODEL_S(a,b,c) new model_s( a, b, c, 8191 )
 #define INIT_MODEL_B(a,b)   new model_b( a, b, 8191 )
 
