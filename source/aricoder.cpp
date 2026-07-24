@@ -263,6 +263,13 @@ model_s::model_s( int max_s, int max_c, int max_o, int c_lim )
 	// set up internal counts
 	null_table->max_count = 1;
 	null_table->max_symbol = max_symbol;
+	// fast-path Fenwick mirror (see table_s::bit) -- built once, never
+	// touched again since update_model() never revisits the null table
+	null_table->bit = ( unsigned int* ) calloc( max_symbol + 1, sizeof( int ) );
+	if ( null_table->bit == NULL ) ERROR_EXIT;
+	null_table->active_symbols = ( int* ) calloc( max_symbol, sizeof( int ) );
+	if ( null_table->active_symbols == NULL ) ERROR_EXIT;
+	bit_rebuild( null_table );
 	
 	// set up start table
 	start_table = ( table_s* ) calloc( 1, sizeof( table_s ) );
@@ -317,17 +324,21 @@ model_s::model_s( int max_s, int max_c, int max_o, int c_lim )
 model_s::~model_s( void )
 {
 	table_s* context;
-	
-	
+
+
 	// clean up each 'normal' table
 	context = contexts[ 0 ];
 	recursive_cleanup ( context );
-	
+
 	// clean up null table
-	context = contexts[ -1 ];	
+	context = contexts[ -1 ];
 	if ( context->links  != NULL )
 		free( context->links  );
-	if ( context->counts != NULL ) free( context->counts );
+	if ( context->counts != NULL ) {
+		free( context->counts );
+		free( context->bit );
+		free( context->active_symbols );
+	}
 	free ( context );
 	
 	// free everything else
@@ -357,8 +368,14 @@ void model_s::update_model( int symbol )
 				local_order <= max_order; local_order++ ) {
 			context = contexts[ local_order ];
 			counts = context->counts + symbol;
+			// keep the Fenwick fast-path mirror (table_s::bit) in sync
+			bool was_zero = ( (*counts) == 0 );
 			// update count for specific symbol & scale
 			(*counts)++;
+			bit_add( context, symbol, 1 );
+			context->bit_total++;
+			if ( was_zero )
+				context->active_symbols[ context->distinct_used++ ] = symbol;
 			// store side information for totalize_table
 			if ( (*counts) > context->max_count ) context->max_count = (*counts);
 			if ( symbol >= context->max_symbol ) context->max_symbol = symbol+1;
@@ -493,17 +510,39 @@ int model_s::convert_int_to_symbol( int c, symbol *s )
 {
 	// search the symbol c in the current context table_s,
 	// return scale, low- and high counts
-	
-	table_s* context;
-	
 
-	// totalize table for the current context
+	table_s* context;
+
+
 	context = contexts[ current_order ];
+	ensure_context_ready( context );
+
+	// fast path: no PPM exclusion active yet for this symbol -- use the
+	// Fenwick mirror (table_s::bit) instead of materializing totals[]
+	if ( sb0_count == max_symbol ) {
+		s->scale = fastpath_scale( context );
+		if ( c >= 0 && context->counts[ c ] > 0 ) {
+			unsigned int prefix_c  = bit_prefix( context, c );
+			unsigned int prefix_c1 = prefix_c + context->counts[ c ];
+			s->low_count  = context->bit_total - prefix_c1;
+			s->high_count = context->bit_total - prefix_c;
+			return 0;
+		}
+		s->low_count  = context->bit_total;
+		s->high_count = s->scale;
+		// lazily record the exclusion this escape causes for the next
+		// (lower) order, exactly like the old fast path always did eagerly
+		lazy_populate_scoreboard( context );
+		current_order--;
+		return 1;
+	}
+
+	// slow path (exclusion active): unchanged
 	totalize_table( context );
-	
+
 	// finding the scale is easy
 	s->scale = totals[ 0 ];
-	
+
 	// check if that symbol exists in the current table. send escape otherwise
 	if ( c >= 0 ) {
 		if ( context->counts[ c ] > 0 ) {
@@ -513,7 +552,7 @@ int model_s::convert_int_to_symbol( int c, symbol *s )
 			return 0;
 		}
 	}
-	
+
 	// return high and low count for the escape symbol
 	s->low_count  = totals[ 1 ];
 	s->high_count = totals[ 0 ];
@@ -528,8 +567,17 @@ int model_s::convert_int_to_symbol( int c, symbol *s )
 	
 void model_s::get_symbol_scale( symbol *s )
 {
-	// getting the scale is easy: totalize the table_s, use accumulated count -> done
-	totalize_table( contexts[ current_order ] );
+	table_s* context = contexts[ current_order ];
+	ensure_context_ready( context );
+
+	if ( sb0_count == max_symbol ) {
+		// fast path -- see convert_int_to_symbol
+		s->scale = fastpath_scale( context );
+		return;
+	}
+
+	// slow path (exclusion active): unchanged
+	totalize_table( context );
 	s->scale = totals[ 0 ];
 }
 
@@ -542,11 +590,37 @@ int model_s::convert_symbol_to_int( int count, symbol *s )
 {
 	// seek the symbol that matches the count,
 	// also, set low- and high count for the symbol - it has to be removed from the stream
-	
+
 	int c;
-	
+
+	// fast path: mirrors convert_int_to_symbol / get_symbol_scale above.
+	// s->scale was already set by the preceding get_symbol_scale() call.
+	if ( sb0_count == max_symbol ) {
+		table_s* context = contexts[ current_order ];
+		unsigned int grand_total = context->bit_total;
+		unsigned int ucount = (unsigned int) count;
+		if ( ucount >= grand_total ) {
+			// escape zone
+			s->low_count  = grand_total;
+			s->high_count = s->scale;
+			lazy_populate_scoreboard( context );
+			current_order--;
+			return ESCAPE_SYMBOL;
+		}
+		// CDF is descending (low symbol index = high count range), while the
+		// Fenwick tree is an ascending prefix sum -- invert via grand_total.
+		unsigned int target = grand_total - 1 - ucount;
+		int sym = bit_find_kth( context, target );
+		unsigned int prefix_sym  = bit_prefix( context, sym );
+		unsigned int prefix_sym1 = prefix_sym + context->counts[ sym ];
+		s->low_count  = grand_total - prefix_sym1;
+		s->high_count = grand_total - prefix_sym;
+		return sym;
+	}
+
+	// slow path (exclusion active): unchanged
 	// go through the totals table, search the symbol that matches the count
-	for ( c = 1; count < (signed) totals[ c ]; c++ );	
+	for ( c = 1; count < (signed) totals[ c ]; c++ );
 	// set up the current symbol
 	s->low_count  = totals[ c ];
 	s->high_count = totals[ c - 1 ];
@@ -555,9 +629,113 @@ int model_s::convert_symbol_to_int( int count, symbol *s )
 		current_order--;
 		return ESCAPE_SYMBOL;
 	}
-	
+
 	// return symbol value
 	return ( c - 2 );
+}
+
+
+/* -----------------------------------------------
+	Fenwick tree (BIT) fast-path helpers.
+	Only ever consulted/maintained while sb0_count == max_symbol (no PPM
+	exclusion active yet for the symbol currently being coded) -- the
+	exclusion ("slow") path keeps using totalize_table()/totals[] exactly
+	as before, untouched. See table_s::bit in aricoder.h for the rationale.
+	----------------------------------------------- */
+
+void model_s::ensure_context_ready( table_s* context )
+{
+	// lazily allocate counts[] + its Fenwick mirror the first time this
+	// context is actually used (mirrors the old totalize_table behaviour)
+	if ( context->counts != NULL ) return;
+	context->counts = ( unsigned short* ) calloc( max_symbol, sizeof( short ) );
+	if ( context->counts == NULL ) ERROR_EXIT;
+	context->bit = ( unsigned int* ) calloc( max_symbol + 1, sizeof( int ) );
+	if ( context->bit == NULL ) ERROR_EXIT;
+	context->active_symbols = ( int* ) calloc( max_symbol, sizeof( int ) );
+	if ( context->active_symbols == NULL ) ERROR_EXIT;
+	// counts/bit/active_symbols/distinct_used/bit_total are all correctly
+	// zero from calloc -- nothing else to do for a brand new context
+}
+
+void model_s::bit_add( table_s* context, int i, int delta )
+{
+	for ( int x = i + 1; x <= max_symbol; x += x & (-x) )
+		context->bit[ x ] += delta;
+}
+
+unsigned int model_s::bit_prefix( table_s* context, int i )
+{
+	unsigned int s = 0;
+	for ( int x = i; x > 0; x -= x & (-x) )
+		s += context->bit[ x ];
+	return s;
+}
+
+// standard Fenwick "find_kth": returns the largest sym such that
+// prefix_sum(sym) <= target < prefix_sum(sym+1)
+int model_s::bit_find_kth( table_s* context, unsigned int target )
+{
+	int pos = 0;
+	int logn = 1;
+	while ( ( logn << 1 ) <= max_symbol ) logn <<= 1;
+	for ( int pw = logn; pw > 0; pw >>= 1 ) {
+		int next = pos + pw;
+		if ( next <= max_symbol && context->bit[ next ] <= target ) {
+			pos = next;
+			target -= context->bit[ next ];
+		}
+	}
+	return pos;
+}
+
+// full O(max_symbol) rebuild of bit[]/active_symbols[]/distinct_used/bit_total
+// from counts[] -- used for the null table's one-time init and after
+// rescale_table's bitshift (same call frequency as today, not a new cost)
+void model_s::bit_rebuild( table_s* context )
+{
+	memset( context->bit, 0, ( max_symbol + 1 ) * sizeof( unsigned int ) );
+	context->bit_total = 0;
+	context->distinct_used = 0;
+	for ( int i = 0; i < max_symbol; i++ ) {
+		if ( context->counts[ i ] > 0 ) {
+			bit_add( context, i, context->counts[ i ] );
+			context->bit_total += context->counts[ i ];
+			context->active_symbols[ context->distinct_used++ ] = i;
+		}
+	}
+}
+
+// grand total + escape probability for the current (no-exclusion) context,
+// i.e. what totals[0] would be on totalize_table's fast path
+unsigned int model_s::fastpath_scale( table_s* context )
+{
+	int D = context->distinct_used;
+	int sb0_after = max_symbol - D;
+	unsigned int esc_prob;
+	if ( max_symbol == sb0_after ) esc_prob = 1;
+	else if ( sb0_after == 0 ) esc_prob = 0;
+	else {
+		esc_prob  = (unsigned int) sb0_after * (unsigned int) D;
+		esc_prob /= (unsigned int) ( max_symbol * context->max_count );
+		esc_prob++;
+	}
+	return context->bit_total + esc_prob;
+}
+
+// populate the (shared) scoreboard/sb0_count from this context's
+// active_symbols -- call only right before an actual escape (current_order--),
+// mirroring what totalize_table's old fast path always did as a side effect,
+// but lazily: skipped entirely on the common (non-escaping) case
+void model_s::lazy_populate_scoreboard( table_s* context )
+{
+	for ( int i = 0; i < context->distinct_used; i++ ) {
+		int sym = context->active_symbols[ i ];
+		if ( scoreboard[ sym ] == 0 ) {
+			scoreboard[ sym ] = 1;
+			sb0_count--;
+		}
+	}
 }
 
 
@@ -676,6 +854,12 @@ inline void model_s::rescale_table( table_s* context, int scale_factor )
 	for ( i = lst_symbol - 1; i >= 0; i-- )
 		if ( counts[ i ] > 0 ) break;
 	context->max_symbol = i + 1;
+
+	// counts[] changed under the Fenwick mirror's feet -- full rebuild.
+	// Same O(max_symbol) cost as the scan just above, and rescale_table
+	// is already infrequent (only when a count saturates), so this is not
+	// a new asymptotic cost.
+	bit_rebuild( context );
 }
 
 
@@ -705,7 +889,7 @@ inline void model_s::recursive_flush( table_s* context, int scale_factor )
 inline void model_s::recursive_cleanup( table_s *context )
 {
 	// be careful not to cut any link too early!
-	
+
 	int i;
 
 	// go through each link != NULL
@@ -715,9 +899,13 @@ inline void model_s::recursive_cleanup( table_s *context )
 				recursive_cleanup( context->links[ i ] );
 		free ( context->links );
 	}
-	
-	// clean up table	
-	if ( context->counts != NULL ) free ( context->counts );	
+
+	// clean up table
+	if ( context->counts != NULL ) {
+		free ( context->counts );
+		free ( context->bit );
+		free ( context->active_symbols );
+	}
 	free( context );
 }
 

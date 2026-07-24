@@ -41,6 +41,21 @@ struct table_s {
 	unsigned short max_count;
 	unsigned short max_symbol;
 	// unsigned short esc_prob;
+	// Fenwick tree (BIT) mirror of counts[], 1-indexed, size model_max_symbol+1.
+	// Lets the no-exclusion fast path (see model_s::totalize_table) get the
+	// grand total and any symbol's cumulative count in O(log n) instead of
+	// rebuilding the whole totals[] array in O(n) on every call. Kept in
+	// sync incrementally in update_model() and rebuilt in rescale_table().
+	// Only used/valid on the fast path (no PPM exclusion active yet for the
+	// symbol being coded) -- the exclusion ("slow path") stays untouched.
+	unsigned int* bit;
+	unsigned int bit_total;
+	// symbols with counts[i] > 0, for lazily populating the scoreboard only
+	// if this context's attempt actually escapes (see convert_int_to_symbol/
+	// convert_symbol_to_int) -- avoids the scoreboard scan entirely on the
+	// (~99%) common case where the symbol resolves without escaping.
+	int* active_symbols;
+	int distinct_used;
 };
 
 
@@ -119,6 +134,15 @@ class model_s
 	inline void rescale_table(table_s* context, int scale_factor );
 	inline void recursive_flush(table_s* context, int scale_factor );
 	inline void recursive_cleanup(table_s* context );
+
+	// Fenwick tree (BIT) fast-path helpers -- see table_s::bit above.
+	inline void ensure_context_ready( table_s* context );
+	inline void bit_add( table_s* context, int i, int delta );
+	inline unsigned int bit_prefix( table_s* context, int i );
+	inline int bit_find_kth( table_s* context, unsigned int target );
+	inline void bit_rebuild( table_s* context );
+	inline unsigned int fastpath_scale( table_s* context );
+	inline void lazy_populate_scoreboard( table_s* context );
 };
 
 
