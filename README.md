@@ -474,7 +474,16 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
-* **v3.0 (LTS, in pre-release)** — MP1/MP2 (MPEG Audio Layer I/II)
+* **v3.0b** — faster arithmetic coding: the statistical models keep a
+  Fenwick tree alongside their symbol counts, so the common
+  no-exclusion path resolves a symbol in O(log n) instead of rebuilding
+  the cumulative table in O(n) (~7–8% faster compression *and*
+  decompression, byte-identical output). Also fixes an ID3v2 skip that
+  read the layer-detection window from the wrong file offset, which
+  could route a Layer III file to the Layer I/II codec and leave it
+  stored uncompressed.
+* **v3.0a** — rebuilt against packMP2 v0.8 (retrained zstd dictionary).
+* **v3.0 (LTS)** — MP1/MP2 (MPEG Audio Layer I/II)
   support via the [packMP2](https://github.com/YadeWira/packMP2) library
   (`a`/`x`/`list`/`stats`/`-ver`, separate `"M2"` container); losslessly
   recompresses embedded ID3v2 cover art, JPEG via
