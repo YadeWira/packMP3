@@ -2084,7 +2084,18 @@ INTERN bool check_file( void )
 				}
 				pn = str_in->read( pk, 1, sizeof(pk) );
 			}
-			str_in->rewind();
+			// Junk before the first frame can outlast a single peek window.
+			// When that happens no sync is found at all, the F_MP3 default
+			// above silently stands, and a Layer I/II file then gets refused
+			// by the Layer III reader ("file is MPEG-1 LAYER II, not
+			// supported" -- found on a Layer II file behind 8192 zero bytes).
+			// So keep pulling windows from where the stream already sits,
+			// carrying 3 bytes across each boundary so a header straddling
+			// two reads is still seen, bounded by the same GARBAGE_TOLERANCE
+			// the native first-frame seeker uses.
+			int scanned = 0;
+			bool decided = false;
+			while ( true ) {
 			for ( int p = 0; p + 4 <= pn; p++ ) {
 				if ( pk[p] != 0xFF || ( pk[p+1] & 0xE0 ) != 0xE0 ) continue;
 				int lb = ( pk[p+1] >> 1 ) & 0x3, ver = ( pk[p+1] >> 3 ) & 0x3;
@@ -2102,8 +2113,18 @@ INTERN bool check_file( void )
 				// -- not just the internal unpack/pack transform -- across all
 				// 3 methods (auto/zstd/zpaq) before this was trusted).
 				if ( layer == 1 || layer == 2 ) filetype = F_MP2;
+				decided = true;
 				break;
 			}
+			if ( decided || pn < 4 ) break;
+			scanned += pn - 3;
+			if ( scanned >= GARBAGE_TOLERANCE ) break;
+			memmove( pk, pk + pn - 3, 3 );
+			int got = str_in->read( pk + 3, 1, sizeof(pk) - 3 );
+			if ( got <= 0 ) break;
+			pn = 3 + got;
+			}
+			str_in->rewind();
 		}
 		// skip silently if decompress-only: reset to F_UNK so process_file()
 		// does nothing (was a NULL-str_out crash when it tried to compress).
