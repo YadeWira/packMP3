@@ -1459,6 +1459,15 @@ INTERN void process_ui( void )
 								fprintf( msgout, "       cover art (%s): %8.1f KB -> %8.1f KB  %5.1f%%\n",
 									apic_is_png_disp ? "PNG" : "JPEG", img_orig_kb, img_comp_kb, img_cr );
 							}
+							// Say so when nothing was gained and the input went in
+							// as-is. A bare "100.0%" is ambiguous: it is the honest
+							// answer for some inputs (low-bitrate Layer II, where
+							// packMP2's never-expand guard stores verbatim), but it
+							// is also exactly what a detection/routing bug looks
+							// like -- one of those hid behind a silent 100.0% here
+							// for months. Naming it makes the two distinguishable.
+							if ( pmpfilesize >= mp3filesize )
+								fprintf( msgout, "       no size gain -- stored as-is\n" );
 						} else if ( action != A_LIST && action != A_STATS ) {
 							#if defined(_WIN32) || defined(WIN32)
 							fprintf( msgout, "\r  +  %-46.46s DONE\n", _fn );
