@@ -73,17 +73,17 @@
 
 // Embedded ID3v2 cover-art (APIC) recompression, PNG covers: packPNG library
 // (sibling project), same CLI-only scope as the packJPG case above.
-// packPNG's own `make lib` bundles a fresh copy of packJPG internally (it
-// uses packJPG's codec for its own purposes) -- since that embedded copy has
-// the SAME model_s/model_b classes (and the same pjglib_* function names) as
-// both packMP3's own code and the packJPG copy vendored just above, the
-// prebuilt libpackpng.a under vendor/packpng/{,win64,win32}/ has ITS OWN,
-// separate `objcopy --redefine-syms` pass applied (distinct rename targets
-// from packJPG's own map, so all three copies stay unique) -- see
-// vendor/packpng/redefine_map*.txt. Confirmed via a real link + round-trip
-// smoke test on Linux, win-x64 and win-x86 before trusting this. packpng.h
-// has no EXPORT/__declspec branch, so no extra guard needed beyond the
-// existing BUILD_LIB/BUILD_DLL one above.
+// packPNG bundles a copy of packJPG internally (it uses packJPG's codec for
+// its own purposes), whose model_s/model_b classes and pjglib_* names used to
+// collide three ways: with packMP3's own aricoder, with the packJPG copy
+// vendored just above, and with each other. Up to packPNG v2.0c that needed a
+// third, separate `objcopy --redefine-syms` pass here. From v2.0d on packPNG
+// isolates those symbols in its own build (ppng_pjg_ prefix), so the pass and
+// its rename maps are gone -- verified against real symbol lists that the
+// prebuilt libpackpng.a under vendor/packpng/{,win64,win32}/ collides with
+// nothing of ours on all three platforms. packpng.h has no EXPORT/__declspec
+// branch, so no extra guard needed beyond the existing BUILD_LIB/BUILD_DLL
+// one above.
 #include "vendor/packpng-src/source/packpng.h"
 #endif
 
@@ -468,16 +468,17 @@ INTERN const unsigned char appversion = 31;
 INTERN const unsigned char appversion_legacy_min = 20;
 // Displayed product version, deliberately decoupled from appversion above:
 // v3.0 LTS shipped as the stable/final tag (v3.0, then v3.0a for the
-// packMP2 v0.8 dependency bump, then v3.0b for the aricoder.h Fenwick
-// fast-path speedup -- see subversion below). appversion is the separate
+// packMP2 v0.8 dependency bump, v3.0b for the aricoder.h Fenwick fast-path
+// speedup, v3.0c for the MPEG-2/2.5 Layer III frame-size and first-frame
+// detection fixes -- see subversion below). appversion is the separate
 // wire-format compat stamp and does not have to match this 1:1 (it's
 // already ahead, at 31, from the v3.0 cycle's own additions).
 INTERN const unsigned char displayversion_major = 3;
 INTERN const unsigned char displayversion_minor = 0;
-INTERN const char*  subversion   = "b";
+INTERN const char*  subversion   = "c";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "07/24/2026";
+INTERN const char*  versiondate  = "07/26/2026";
 INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";

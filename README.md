@@ -50,13 +50,13 @@ vendored (packMP3 doesn't build any of the three from source) — build
 `source/vendor/packmp2/`, `source/vendor/packjpg/` and
 `source/vendor/packpng/` (plus `win64`/`win32` subdirs for the
 cross-compile targets) before running `make`. packPNG's own `libpackpng.a`
-bundles a fresh copy of packJPG internally, which collides (same C++
-class/function names) with both packMP3's own code and the standalone
-packJPG copy above — the vendored copy needs an extra `objcopy
---redefine-syms` pass first (map committed at
-`source/vendor/packpng/redefine_map*.txt`); see the include comment above
-`vendor/packpng-src/source/packpng.h` in `packmp3.cpp` for the exact
-symbol-collision rationale if rebuilding this from scratch.
+bundles a copy of packJPG internally, whose C++ class/function names used to
+collide with both packMP3's own code and the standalone packJPG copy above.
+Up to packPNG v2.0c that required an extra `objcopy --redefine-syms` pass on
+our side; from v2.0d packPNG isolates those symbols in its own build
+(`ppng_pjg_` prefix), so no rename is needed here — see the include comment
+above `vendor/packpng-src/source/packpng.h` in `packmp3.cpp` for the full
+history if rebuilding this from scratch.
 
 
 ## Usage
@@ -474,6 +474,21 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
+* **v3.0c** — fixes two ways a file could be refused or left
+  uncompressed. `frame_size_table`'s Layer III rows for MPEG-2 and
+  MPEG-2.5 were copies of the Layer II rows beside them; Layer II keeps
+  1152 samples per frame in the low-sampling-frequency extension but
+  Layer III halves to 576, so those frame sizes were all 2x too large
+  and the first-frame seeker stepped two frames at a time. CBR survived
+  that by luck, VBR did not — any VBR MPEG-2/2.5 Layer III file (a
+  low-bitrate VBR MP3, the usual shape for podcasts and voice) was
+  rejected outright. Layer detection also scanned only one 8192-byte
+  window, so a first frame further out than that left the MP3 default
+  standing and a Layer I/II file was then refused by the Layer III
+  reader; it now scans up to the same 64 KB tolerance the seeker uses.
+  A ratio at or above 100% now says "no size gain — stored as-is"
+  instead of leaving a bare 100.0%. Vendored siblings bumped to packMP2
+  v0.8.1, packJPG v5.0c and packPNG v2.0d.
 * **v3.0b** — faster arithmetic coding: the statistical models keep a
   Fenwick tree alongside their symbol counts, so the common
   no-exclusion path resolves a symbol in O(log n) instead of rebuilding

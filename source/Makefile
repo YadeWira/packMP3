@@ -62,13 +62,13 @@ LDFLAGS += -Lvendor/packjpg -lpackJPG
 # (sibling project). Header comes from the vendor/packpng-src/ git submodule;
 # the prebuilt static lib under vendor/packpng/ is a separate build artifact.
 # packPNG's own `make lib` produces a *fat* archive that bundles its own copy
-# of packJPG (it uses packJPG internally) -- since packMP3 already vendors
-# packJPG separately, that embedded copy needed its own objcopy
-# --redefine-syms pass (distinct from packJPG's own rename) before it could
-# be linked alongside our standalone packJPG copy without duplicate-symbol
-# errors; see vendor/packpng/redefine_map*.txt and the include comment in
-# packmp3.cpp. -lz -llzma -lzstd are packPNG's remaining external deps (the
-# fat archive bundles kanzi+preflate but not these system compression libs).
+# of packJPG (it uses packJPG internally). Up to packPNG v2.0c that embedded
+# copy collided with the packJPG we vendor separately and needed its own
+# objcopy --redefine-syms pass here; from v2.0d packPNG isolates those symbols
+# in its own build (ppng_pjg_ prefix), so no rename is needed on our side --
+# see the include comment in packmp3.cpp. -lz -llzma -lzstd are packPNG's
+# remaining external deps (the fat archive bundles kanzi+preflate but not
+# these system compression libs).
 LDFLAGS += -Lvendor/packpng -lpackpng -lz -llzma -lzstd
 
 # Windows-targeted packmp2/packjpg/packpng static libs (separate mingw-built
