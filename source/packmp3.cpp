@@ -4939,8 +4939,16 @@ INTERN bool apic_try_recompress_jpeg( unsigned char** modified, int* modified_si
 	bool vok;
 	{
 		std::lock_guard<std::mutex> lk( pjg_mutex );
+		// Same guard as the decode side (apic_reconstruct), capped at the
+		// size this round-trip must reproduce. The input is a blob we just
+		// produced, so this is not about untrusted data: it stops a
+		// misbehaving conversion from allocating a huge buffer that the
+		// memcmp below would reject anyway.
+		unsigned int prev_cap = pjglib_get_max_output_size();
+		pjglib_set_max_output_size( (unsigned int) img_len );
 		pjglib_init_streams( (void*) pjg_out, 1, pjg_len, NULL, 1 );
 		vok = pjglib_convert_stream2mem( &verify_out, &verify_len, msg );
+		pjglib_set_max_output_size( prev_cap );
 	}
 	bool roundtrip_ok = vok && verify_out != NULL && verify_len == (unsigned int) img_len
 	                  && memcmp( verify_out, data_before + img_off, img_len ) == 0;
@@ -4992,7 +5000,12 @@ INTERN bool apic_try_recompress_png( unsigned char** modified, int* modified_siz
 	int vrc;
 	{
 		std::lock_guard<std::mutex> lk( packpng_mutex );
+		// Same guard as the decode side (apic_reconstruct), capped at the
+		// size this round-trip must reproduce. See there for why the reset
+		// goes to 0 rather than to a saved value.
+		packpng_set_max_output_size( (size_t) img_len );
 		vrc = packpng_decompress_mem( ppg_out, ppg_len, &verify_out, &verify_len );
+		packpng_set_max_output_size( 0 );
 	}
 	bool roundtrip_ok = vrc == 0 && verify_out != NULL && verify_len == (size_t) img_len
 	                  && memcmp( verify_out, data_before + img_off, img_len ) == 0;
@@ -5050,7 +5063,37 @@ INTERN bool apic_reconstruct( void )
 		int rc;
 		{
 			std::lock_guard<std::mutex> lk( packpng_mutex );
+			// Decompression-bomb guard (packPNG v2.0e+). The bytes being
+			// decoded here come out of a .pm3 that may have been built by
+			// hand, and the length check further down only runs *after*
+			// packPNG has already allocated and reconstructed whatever its
+			// embedded stream declared. This bounds that allocation.
+			//
+			// The cap is the exact expected size, not a heuristic ceiling:
+			// packPNG is byte-exact, so a legitimate cover always
+			// reconstructs to exactly apic_orig_len and needs no headroom.
+			//
+			// Set immediately before the call and cleared right after. The
+			// limit is process-global, not per-call, so leaving a
+			// cover-sized value behind would silently cap some unrelated
+			// decode later -- a far more confusing failure than no guard at
+			// all. packPNG v2.0e exposes no getter, so the reset goes to 0,
+			// its documented default; the packJPG branch below can read the
+			// previous value back and restores that instead.
+			//
+			// Not a complete guarantee: packPNG's default TCIP backend
+			// checks the ceiling post-hoc in preflate_recreate, whose FFI
+			// gives no prior size hint, so that one allocation still happens
+			// before the oversized result is rejected. The guard bounds the
+			// damage on that path rather than preventing it -- and the
+			// rejection surfaces as a plain "preflate recreate failed",
+			// indistinguishable from genuine corruption (measured against a
+			// hand-tampered archive, not inferred). So on the PNG path the
+			// guard is real but the diagnosis is not: do not try to tell a
+			// bomb from a corrupt cover by the message here.
+			packpng_set_max_output_size( (size_t) apic_orig_len );
 			rc = packpng_decompress_mem( data_before + apic_offset, (size_t) apic_pjg_len, &ppg_out, &ppg_len );
+			packpng_set_max_output_size( 0 );
 		}
 		if ( rc != 0 || ppg_out == NULL || ppg_len != (size_t) apic_orig_len ) {
 			if ( ppg_out != NULL ) packpng_free( ppg_out );
@@ -5066,8 +5109,41 @@ INTERN bool apic_reconstruct( void )
 		bool ok;
 		{
 			std::lock_guard<std::mutex> lk( pjg_mutex );
+			// Decompression-bomb guard, same untrusted input and the same
+			// exact-size reasoning as the PNG branch above. packJPG's limit
+			// is a plain global too (not thread_local), so set and restore
+			// stay inside this lock.
+			//
+			// Restore the value actually read back, never an assumed
+			// default: packJPG's default is 256 MB and 0 means *unlimited*,
+			// so "resetting" to 0 would quietly disable the guard instead of
+			// restoring it. Reading it also survives packJPG changing its
+			// default without telling us.
+			//
+			// packJPG signals this through several different messages, all of
+			// which mean "limit hit", none of which mean corruption:
+			// "output size limit exceeded" (this limit, pre-decode and exact
+			// variants), "blowup ratio exceeded" (packJPG's own always-on
+			// ratio guard, unreachable for covers -- its 1 MB floor dwarfs
+			// any thumbnail), "corrupt data: decoder exceeded size limit"
+			// (the per-field cut-off, whose wording says corruption but is
+			// not) and "sfth component stream too large: N bytes (limit M)"
+			// (the per-component cap). That last one is what a tampered
+			// cover record actually produces in practice -- measured, not
+			// assumed -- so any future attempt to classify these by prefix
+			// has to cover all four, not the three the API documents.
+			// packMP3 does not classify: it passes the message through, so
+			// the operator sees packJPG's own wording.
+			//
+			// If multi-APIC support is ever added: do NOT decode covers
+			// through pjglib_convert_batch. The limit is shared global
+			// state, so the last set would win for every worker and each
+			// cover would end up validated against another cover's size.
+			unsigned int prev_cap = pjglib_get_max_output_size();
+			pjglib_set_max_output_size( (unsigned int) apic_orig_len );
 			pjglib_init_streams( (void*)( data_before + apic_offset ), 1, apic_pjg_len, NULL, 1 );
 			ok = pjglib_convert_stream2mem( &jpg_out, &jpg_len, msg );
+			pjglib_set_max_output_size( prev_cap );
 		}
 		if ( !ok || jpg_out == NULL || jpg_len != (unsigned int) apic_orig_len ) {
 			if ( jpg_out != NULL ) free( jpg_out );
