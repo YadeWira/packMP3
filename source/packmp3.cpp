@@ -950,7 +950,10 @@ EXPORT void pmplib_init_streams( void* in_src, int in_type, int in_size, void* o
 	
 	vice versa for output streams! */
 	
-	unsigned char buffer[ 2 ];
+	// zero-initialized: on an input shorter than 2 bytes the read below leaves
+	// part of this untouched, and every magic test that follows would then be
+	// reading indeterminate stack bytes.
+	unsigned char buffer[ 2 ] = { 0, 0 };
 	
 	
 	// (re)set errorlevel
@@ -982,6 +985,31 @@ EXPORT void pmplib_init_streams( void* in_src, int in_type, int in_size, void* o
 	// check input stream
 	str_in->read( buffer, 1, 2 );
 	str_in->rewind();
+	// Containers the CLI supports but the library build does not: the chunked
+	// "MK" archive (-k) and the "M2" Layer I/II archive (packMP2 backend, see
+	// the BUILD_LIB guards around l2_compress/l2_decompress). Without this
+	// check both fall through to the MP3 branch below and eventually fail
+	// with "no mpeg audio data recognized" -- a clean failure, but a
+	// misleading one: these ARE valid packMP3 archives, just in a container
+	// this build cannot open. Name the real reason instead. Setting
+	// errorlevel here is enough to stop the conversion: execute() short-
+	// circuits while errorlevel >= err_tol, and reset_buffers() (the first
+	// thing pmplib_convert_stream2mem does) does not clear it.
+	if ( (buffer[0] == pmc_magic[0]) && (buffer[1] == pmc_magic[1]) ) {
+		filetype = F_UNK;
+		snprintf( errormessage, MSG_SIZE,
+			"chunked archive (-k): supported by the packMP3 CLI, not by the library API" );
+		errorlevel = 2;
+		return;
+	}
+	if ( (buffer[0] == l2_magic[0]) && (buffer[1] == l2_magic[1]) ) {
+		filetype = F_UNK;
+		snprintf( errormessage, MSG_SIZE,
+			"MPEG Layer I/II archive: supported by the packMP3 CLI, not by the library API" );
+		errorlevel = 2;
+		return;
+	}
+
 	if ( (buffer[0] == pmp_magic[0]) && (buffer[1] == pmp_magic[1]) ) {
 		// file is PMP
 		filetype = F_PMP;
@@ -5043,7 +5071,12 @@ INTERN bool apic_reconstruct( void )
 		}
 		if ( !ok || jpg_out == NULL || jpg_len != (unsigned int) apic_orig_len ) {
 			if ( jpg_out != NULL ) free( jpg_out );
-			snprintf( errormessage, MSG_SIZE, "packJPG decode failed: %s", msg );
+			// %.488s, not %s: packJPG's msg buffer is PJG_MSG_SIZE (512), the
+			// same size as errormessage, so a full-length packJPG message plus
+			// our 23-char prefix cannot fit. snprintf would truncate safely
+			// anyway, but the explicit precision keeps -Wformat-truncation
+			// quiet (it only fires in the -O0 `dev` build).
+			snprintf( errormessage, MSG_SIZE, "packJPG decode failed: %.488s", msg );
 			errorlevel = 2;
 			return false;
 		}
