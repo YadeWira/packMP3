@@ -16,7 +16,23 @@ LDFLAGS   = -flto=auto
 CSRC     = $(wildcard *.c)
 CXXSRC   = $(wildcard *.cpp)
 DEPS     = $(wildcard *.h) Makefile
-OBJ      = $(patsubst %.c,%.o,$(CSRC)) $(patsubst %.cpp,%.o,$(CXXSRC))
+
+# One object directory per build variant. The CLI, `dev`, `lib` and `so`
+# compile the SAME sources with mutually incompatible flags (-O0 -g /
+# -DBUILD_LIB / -DBUILD_DLL -fvisibility=hidden -fPIC). make only compares
+# .o-vs-source timestamps -- it has no idea which flags an object was built
+# with -- so sharing one set of .o files means a stale object from another
+# variant is silently reused. That bit twice in practice: `make so` after
+# `make lib` failed outright with a TPOFF32 relocation error (non-PIC
+# objects reused for a shared library), and `make dev` after `make` silently
+# relinked the -O3 objects, producing a "debug" build with no debug in it.
+# Separate directories make every combination correct without `make clean`
+# in between.
+OBJNAMES = $(patsubst %.c,%.o,$(CSRC)) $(patsubst %.cpp,%.o,$(CXXSRC))
+CLIOBJ   = $(addprefix .obj/cli/,$(OBJNAMES))
+DEVOBJ   = $(addprefix .obj/dev/,$(OBJNAMES))
+LIBOBJ   = $(addprefix .obj/lib/,$(OBJNAMES))
+SOOBJ    = $(addprefix .obj/so/,$(OBJNAMES))
 
 # Cross-compilers
 WIN64       = x86_64-w64-mingw32-g++
@@ -95,13 +111,29 @@ else
 endif
 
 # ---- Rules ----
-%.o: %.cpp $(DEPS)
+.obj/cli/%.o: %.cpp $(DEPS)
+	@mkdir -p $(@D)
 	$(CXX) -c -o $@ $< $(CXXFLAGS)
+
+.obj/dev/%.o: %.cpp $(DEPS)
+	@mkdir -p $(@D)
+	$(CXX) -c -o $@ $< $(CXXFLAGS) -DDEV_BUILD -O0 -g
+
+.obj/lib/%.o: %.cpp $(DEPS)
+	@mkdir -p $(@D)
+	$(CXX) -c -o $@ $< $(CXXFLAGS) -DBUILD_LIB
+
+# -fPIC is required: the codec's thread_local globals need the
+# position-independent (global-dynamic) TLS model to be usable from a
+# shared object; without it, ld fails with a TPOFF32 relocation error.
+.obj/so/%.o: %.cpp $(DEPS)
+	@mkdir -p $(@D)
+	$(CXX) -c -o $@ $< $(CXXFLAGS) -DBUILD_DLL -fvisibility=hidden -fPIC
 
 %.res: %.rc
 	@-$(RC) $< $@
 
-$(TARGET): $(OBJ) $(RES)
+$(TARGET): $(CLIOBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
@@ -109,9 +141,18 @@ $(TARGET): $(OBJ) $(RES)
 
 all: $(TARGET)
 
-# Developer build: debug symbols, assertions
-dev: CXXFLAGS += -DDEV_BUILD -O0 -g
-dev: $(TARGET)
+# Developer build: debug symbols, assertions. Two deliberate differences
+# from before:
+#  - linked WITHOUT -s. The release rule strips the binary, which used to
+#    throw away the very -g symbols this target exists to produce.
+#  - written to $(TARGET)-dev, not $(TARGET). Sharing one output name meant
+#    `make` after `make dev` saw an up-to-date file and did not relink, so
+#    you silently kept running the debug binary (and vice versa).
+dev: $(TARGET)-dev
+
+$(TARGET)-dev: $(DEVOBJ) $(RES)
+	$(CXX) -o $@ $^ $(LDFLAGS)
+	@echo "[OK] $(TARGET)-dev (unstripped, -O0 -g, DEV_BUILD)"
 
 # Profile-guided optimization: instrument, train on the benchmark corpus
 # (generated if absent), then rebuild using the collected profile. Format-safe:
@@ -130,17 +171,13 @@ pgo:
 	@echo "[OK] PGO build complete"
 
 # Static library
-lib: CXXFLAGS += -DBUILD_LIB
-lib: $(OBJ)
-	ar rcs $(TARGET)lib.a $(OBJ)
+lib: $(LIBOBJ)
+	ar rcs $(TARGET)lib.a $(LIBOBJ)
 
-# Shared library (Linux/macOS: lib<name>.so, no import lib needed on ELF)
-# -fPIC is required: the codec's thread_local globals need the
-# position-independent (global-dynamic) TLS model to be usable from a
-# shared object; without it, ld fails with a TPOFF32 relocation error.
-so: CXXFLAGS += -DBUILD_DLL -fvisibility=hidden -fPIC
-so: $(OBJ)
-	$(CXX) -shared -o lib$(TARGET).so $^ $(LDFLAGS)
+# Shared library (Linux/macOS: lib<name>.so, no import lib needed on ELF).
+# See the .obj/so/%.o rule above for why -fPIC is mandatory here.
+so: $(SOOBJ)
+	$(CXX) -shared -o lib$(TARGET).so $(SOOBJ) $(LDFLAGS)
 
 # Windows DLL (cross-compile with mingw): packMP3.dll + import lib for linking.
 # dll = 64-bit (most common ask); dll-x86 = 32-bit; dll-all = both.
@@ -165,7 +202,7 @@ dll-x86: bin
 
 clean:
 	@echo "Cleaning..."
-	@-rm -rf *.o *.a *.so *.gcda $(PGODIR) $(TARGET) $(TARGET).exe $(TARGET).dll \
+	@-rm -rf .obj *.o *.a *.so *.gcda $(PGODIR) $(TARGET) $(TARGET)-dev $(TARGET).exe $(TARGET).dll \
 	         bin/$(TARGET)_linux_x64 \
 	         bin/$(TARGET)_linux_x64_native \
 	         bin/$(TARGET)_win_x64.exe \

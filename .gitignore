@@ -28,6 +28,7 @@
 *.app
 # built CLI binary (named like the project, so ignore by path)
 /source/packMP3
+/source/packMP3-dev
 /bin/
 /source/bin/
 
