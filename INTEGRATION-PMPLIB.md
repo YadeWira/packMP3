@@ -11,7 +11,7 @@ Estado verificado: **packMP3 v3.0d (08/10/2026)**.
 
 ```sh
 cd /home/forum/git/packMP3/source
-make clean          # importante, ver "rough edge" abajo
+make clean          # opcional desde v3.0d, ver nota abajo
 make so             # -> source/libpackMP3.so   (Linux x86-64)
 make dll-x64        # -> source/bin/packMP3.dll (Windows x64, mingw, estático)
 make dll-x86        # -> source/bin/packMP3.dll (Windows x86)
