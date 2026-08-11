@@ -3,7 +3,7 @@
 Para consumidores externos que quieran embeber packMP3 vía `dlopen`/link
 directo. Escrita para PPDF (packPDF), aplica igual a cualquier otro.
 
-Estado verificado: **packMP3 v3.0c (07/26/2026)**, build del 2026-08-10.
+Estado verificado: **packMP3 v3.0d (08/10/2026)**.
 
 ---
 
@@ -26,10 +26,15 @@ Artefacto ya construido y listo para usar:
 /home/forum/git/packMP3/source/packmp3lib.h       (interno del build, no el tuyo)
 ```
 
-**Rough edge conocido del Makefile**: `make so` falla si corrés `make lib`
-antes, porque comparten los `.o` y `lib` los compila sin `-fPIC`. Siempre
-`make clean` entre targets. (Está en mi lista de pendientes; por ahora es
-manual.)
+**Nota de Windows**: si cross-compilás vos, usá los drivers `-posix`
+(`x86_64-w64-mingw32-g++-posix`). No es preferencia: la `libpackJPG.a`
+vendorizada está construida contra winpthreads y linkearla en un binario
+con thread model win32 da un deadlock en runtime, sin ningún error de
+link. Aplica a cualquiera que linkee estas librerías estáticamente, no
+sólo a packMP3. Ver la sección del README.
+
+(El viejo rough edge de `make clean` entre targets está arreglado desde
+v3.0d: cada variante tiene su propio directorio de objetos.)
 
 ---
 
@@ -123,19 +128,24 @@ cosas que sí tiene el CLI:
 ningún setter para activarlo, y el detector de `pmplib_init_streams` sólo
 conoce el magic `"MS"`.
 
-Un `.pm3` chunked (`"MK"`) o un archivo M2 (`"M2"`) pasado a la lib toma la
-rama de MP3 y **falla limpio** — medido: `false` +
-`"no mpeg audio data recognized"` en ambos casos. **No hay riesgo de salida
-corrupta silenciosa.** Lo que sí es malo es el *mensaje*: son archivos
-packMP3 perfectamente válidos, sólo que en un contenedor que la lib no
-soporta, y el texto sugiere que no se reconoció el audio. Compará con el
-caso de un `.mp2` crudo, donde la lib sí dice bien
-`"file is MPEG-1 LAYER II, not supported"`.
+Un `.pm3` chunked (`"MK"`) o un archivo M2 (`"M2"`) pasado a la lib falla
+**limpio** — `false`, sin buffer de salida, nunca salida corrupta
+silenciosa. **Desde v3.0d el mensaje además nombra la causa real**:
 
-Si vas a alimentar la lib con archivos producidos por el CLI, conviene que
-chequees el magic vos — no por corrección, sino para poder darle a tu
-usuario un diagnóstico honesto (`chunked/M2 archive, CLI only`). Anotado
-para 3.0d del lado de packMP3.
+| entrada | mensaje |
+|---|---|
+| chunked (`"MK"`) | `chunked archive (-k): supported by the packMP3 CLI, not by the library API` |
+| M2 (`"M2"`) | `MPEG Layer I/II archive: supported by the packMP3 CLI, not by the library API` |
+| `.mp2` crudo | `file is MPEG-1 LAYER II, not supported` |
+| basura | `no mpeg audio data recognized` |
+
+Hasta v3.0c los dos primeros decían `"no mpeg audio data recognized"`, que
+era engañoso: son archivos packMP3 perfectamente válidos, sólo que en un
+contenedor que este build no puede abrir.
+
+Chequear el magic de tu lado sigue siendo razonable si querés interceptar
+el caso antes de llamar, pero ya no hace falta para no confundir a tu
+usuario: la lib dice la verdad.
 
 Los tags ID3v2/ID3v1 sí se preservan byte-exactos en la lib (van al coder
 genérico); lo que falta es sólo la *recompresión* de la carátula.
