@@ -491,7 +491,17 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
-* **v3.0d** — bounds what an embedded cover can make packMP3 allocate.
+* **v3.0d** — fixes a Windows hang and bounds what an embedded cover can
+  make packMP3 allocate. **On Windows, v3.0c hung forever on any MP3
+  carrying a JPEG cover**: the cover compressed fine and the verification
+  pass immediately after it blocked, with the process using no CPU.
+  Linux was never affected, and `-nc` avoided it. The cause was a mingw
+  thread-model mismatch — the Windows builds used the default (win32)
+  driver while the vendored packJPG library is built against winpthreads,
+  so `std::mutex` resolved against two different runtimes. All Windows
+  targets now cross-compile with the `-posix` drivers; see "Windows
+  builds require the POSIX thread model" above, since the same
+  requirement applies to anyone linking these libraries.
   A `.pm3` can be built by hand, and until now the cover-art decoder
   only checked the reconstructed size *after* packJPG or packPNG had
   already produced whatever the stored blob declared. Both backends now
