@@ -34,9 +34,44 @@ DEVOBJ   = $(addprefix .obj/dev/,$(OBJNAMES))
 LIBOBJ   = $(addprefix .obj/lib/,$(OBJNAMES))
 SOOBJ    = $(addprefix .obj/so/,$(OBJNAMES))
 
-# Cross-compilers
-WIN64       = x86_64-w64-mingw32-g++
-WIN32       = i686-w64-mingw32-g++
+# Cross-compilers.
+#
+# The -posix suffix is mandatory, not a preference. Debian ships two mingw
+# g++ drivers per target: the default one uses the win32 thread model, the
+# -posix one uses winpthreads. They are NOT link-compatible in the presence
+# of C++ threading: std::mutex, std::thread and std::call_once resolve to
+# different runtimes.
+#
+# The vendored libpackJPG.a is built by packJPG with the -posix driver (see
+# its own Makefile) and carries undefined pthread_* references. Linking it
+# into a win32-thread-model binary produced a hard hang: compression of an
+# embedded JPEG cover succeeded, the self-verify decompression right after
+# it blocked forever with the process at ~0.5s of CPU. That shipped in
+# v3.0c -- any MP3 with a JPEG cover hung the Windows build. Linux was
+# never affected.
+#
+# Verified by isolating it: a 25-line program linking only this .a hangs on
+# the decode when built with the default driver and round-trips byte-exact
+# when built with -posix, same .a, nothing else changed. packJPG reproduced
+# it independently with its own harness and numbers.
+#
+# There is no noisy version of this failure. The mismatched link succeeds:
+# exit 0, a complete .exe, not one warning. A deadlock at runtime is the
+# only symptom there is, which is why this comment is long.
+#
+# Note the direction of the requirement. It is not "the sibling libraries
+# must be built posix" -- packJPG's already was. It is that *every consumer
+# of them compiles its own objects with -posix too*, this project included,
+# because a posix .a absorbed into a win32-model host is indistinguishable
+# from a correct build at link time. Nothing the library author can put in
+# the .a, its build or its API detects it downstream.
+#
+# Check with `x86_64-w64-mingw32-g++-posix -v 2>&1 | grep "Thread model"`;
+# it must say posix. If a vendored sibling library ever switches thread
+# models, the mismatch is what to look for first: `nm --undefined-only` on
+# it should show pthread_* references and no __gthr_win32_* ones.
+WIN64       = x86_64-w64-mingw32-g++-posix
+WIN32       = i686-w64-mingw32-g++-posix
 WINDRES64   = x86_64-w64-mingw32-windres
 WINDRES32   = i686-w64-mingw32-windres
 CROSS_FLAGS = -I. -std=c++17 -O3 -flto=auto -Wall -funroll-loops -ffast-math -fomit-frame-pointer -pthread

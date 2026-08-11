@@ -357,16 +357,33 @@ both added during the v3.0 LTS pre-release series) are also CLI-only —
 the library only ever handles MP3 (Layer III) `.pm3` archives, same
 scope as the threading gap above.
 
-### Windows DLL and `thread_local`
+### Windows builds require the POSIX thread model
 
-The DLL is built with mingw's default (win32) thread model and has been
-verified to run cleanly on a real Windows 10 x64 VM (no crash, correct
-output). Because the library currently never spawns threads internally
-(see the limitation above), the DLL doesn't exercise the known
-mingw/win32 issue where `thread_local` destructors can crash at process
-exit for libraries that spawn worker threads across the DLL boundary.
-If thread/batch control is added to the library in the future, revisit
-this with the POSIX thread model mingw toolchain.
+Every Windows target — the CLI, the DLL, x64 and x86 — is cross-compiled
+with `x86_64-w64-mingw32-g++-posix` / `i686-w64-mingw32-g++-posix`, not
+with the unsuffixed drivers. This is a correctness requirement, not a
+preference, and it applies to **anyone linking the vendored sibling
+libraries**, not just to whoever builds them.
+
+Debian ships two mingw g++ drivers per target. The default uses the win32
+thread model; the `-posix` one uses winpthreads. They are not
+link-compatible where C++ threading is involved: `std::mutex`,
+`std::thread` and `std::call_once` resolve against different runtimes.
+The vendored `libpackJPG.a` is built against winpthreads, so linking it
+into a win32-model binary produced a hard hang — compressing an embedded
+JPEG cover succeeded and the self-verify decompression immediately after
+it blocked forever, with the process accumulating no CPU.
+
+That shipped in **v3.0c**: on Windows, any MP3 carrying a JPEG cover hung
+the program. Linux was never affected, and `-nc` (skip cover
+recompression) avoided it. Fixed in v3.0d.
+
+The mismatch is invisible at build time. The link succeeds — exit 0, a
+complete executable, no warning — so a runtime deadlock is the only
+symptom it ever produces. If you build packMP3 for Windows yourself,
+confirm your driver reports `Thread model: posix`. To check a vendored
+library, `nm --undefined-only` on it should show `pthread_*` references
+and no `__gthr_win32_*` ones.
 
 
 ## Known limitations
@@ -474,6 +491,22 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
+* **v3.0d** — bounds what an embedded cover can make packMP3 allocate.
+  A `.pm3` can be built by hand, and until now the cover-art decoder
+  only checked the reconstructed size *after* packJPG or packPNG had
+  already produced whatever the stored blob declared. Both backends now
+  get an explicit output ceiling before every decode, set to the exact
+  size the archive records — both are byte-exact, so a legitimate cover
+  always reconstructs to exactly that and no headroom is needed. On a
+  hand-tampered archive the decode now fails with the real numbers
+  (`output size 758042 exceeds configured max_output_size (4096)`) and
+  produces no output file. Archives are unchanged: same format, same
+  sizes, and `.pm3` files from earlier 3.0x releases still decode
+  byte-exact. The library API also stops reporting "no mpeg audio data
+  recognized" for chunked (`-k`) and Layer I/II archives, which it
+  cannot open but which are perfectly valid packMP3 archives — it now
+  names the container instead. Vendored packPNG bumped to v2.0f for
+  the guard and its diagnostics; packJPG stays at v5.0c.
 * **v3.0c** — fixes two ways a file could be refused or left
   uncompressed. `frame_size_table`'s Layer III rows for MPEG-2 and
   MPEG-2.5 were copies of the Layer II rows beside them; Layer II keeps
