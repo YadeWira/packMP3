@@ -257,8 +257,12 @@ whole file:
 
 Use `-k1` when ratio matters most (archival, bandwidth-constrained
 transfer). Use `-k4`/`-k0` (auto) when speed matters most (interactive
-tools, batch pipelines). `-k` values are format-visible — `list` shows
-the chunk count — but every value reconstructs the input losslessly.
+tools, batch pipelines). Chunking is format-visible: an archive split
+into more than one chunk uses its own container, and `list` reports it
+as a `chunks` line. A single-chunk archive is the plain format and has
+no such line — that includes `-k1` and any `-k0` (auto) run that
+resolves to one chunk, which is what happens on inputs too short to
+split. Either way every value reconstructs the input losslessly.
 
 ### `-th<n>` (multi-file batch)
 
