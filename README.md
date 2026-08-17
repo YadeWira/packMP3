@@ -495,6 +495,16 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
+* **v3.0e** — fixes a crash on malformed input. `list` segfaulted on a
+  truncated chunked (`-k`) archive: the chunk table is four bytes per
+  chunk, and neither the lister nor the decoder checked the file was long
+  enough to hold it before walking it, so a truncated archive read up to
+  256 bytes past the end of its buffer. The decoder validated afterwards
+  and bailed, which hid the over-read rather than preventing it; `list`
+  had no such check and died. Both now verify the table fits first, and
+  `list` gained the two validations the decoder already had — a lister
+  should not accept an archive the decoder would reject. No format
+  change, no effect on valid archives.
 * **v3.0d** — fixes a Windows hang and bounds what an embedded cover can
   make packMP3 allocate. **On Windows, v3.0c hung forever on any MP3
   carrying a JPEG cover**: the cover compressed fine and the verification
