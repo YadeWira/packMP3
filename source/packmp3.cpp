@@ -475,10 +475,10 @@ INTERN const unsigned char appversion_legacy_min = 20;
 // already ahead, at 31, from the v3.0 cycle's own additions).
 INTERN const unsigned char displayversion_major = 3;
 INTERN const unsigned char displayversion_minor = 0;
-INTERN const char*  subversion   = "c";
+INTERN const char*  subversion   = "d";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "07/26/2026";
+INTERN const char*  versiondate  = "08/10/2026";
 INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";
@@ -3239,6 +3239,11 @@ INTERN bool uncompress_pmp_chunked( void )
 
 	int nch = a[3];
 	if ( nch < 1 || nch > MAX_CHUNKS ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
+	// The chunk table itself has to fit before it is walked: 4 bytes per chunk
+	// after the 4-byte header. The checks below catch a bad table, but they run
+	// after it has already been read, so on a truncated archive the read itself
+	// was already past the end of the buffer.
+	if ( (long long) asize < 4 + 4LL * nch ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
 	int o = 4; long long sum = 0; int sizes[ MAX_CHUNKS ];
 	for ( int i = 0; i < nch; i++ ) {
 		sizes[i] = a[o] | (a[o+1]<<8) | (a[o+2]<<16) | (a[o+3]<<24); o += 4; sum += sizes[i];
@@ -8187,8 +8192,21 @@ INTERN bool list_pmp( void )
 		int vmaj = a[2] / 10, vmin = a[2] % 10;
 		int nch = a[3];
 		if ( nch < 1 || nch > MAX_CHUNKS ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
-		int o = 4; int sizes[ MAX_CHUNKS ];
-		for ( int i = 0; i < nch; i++ ) { sizes[i] = a[o]|(a[o+1]<<8)|(a[o+2]<<16)|(a[o+3]<<24); o += 4; }
+		// The chunk table is 4 bytes per chunk after the 4-byte header, so the
+		// file has to be that long before any of it is read. Without this,
+		// a truncated archive with a large nch byte walks the table straight
+		// off the end of the buffer -- that was a reproducible segfault, not a
+		// theoretical one.
+		if ( sz < (long long) 4 + 4LL * nch ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
+		int o = 4; long long sum = 0; int sizes[ MAX_CHUNKS ];
+		for ( int i = 0; i < nch; i++ ) {
+			sizes[i] = a[o]|(a[o+1]<<8)|(a[o+2]<<16)|(a[o+3]<<24); o += 4; sum += sizes[i];
+			if ( sizes[i] <= 0 ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
+		}
+		// Same exactness the decoder requires: the chunks must account for the
+		// whole file, no more and no less. Without it the sub-stream iostreams
+		// below are built over sizes the buffer does not have.
+		if ( (long long) o + sum != sz ) { snprintf( errormessage, MSG_SIZE, "corrupt chunked archive" ); errorlevel = 2; free( a ); return false; }
 		int offs[ MAX_CHUNKS ]; { int p = o; for ( int i = 0; i < nch; i++ ) { offs[i] = p; p += sizes[i]; } }
 
 		iostream* real_in = str_in;
