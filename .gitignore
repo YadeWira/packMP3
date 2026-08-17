@@ -42,3 +42,6 @@ CONEXION-IA*.md
 /corpus/
 /source/.pgo/
 *.gcda
+
+# generated test corpus (tests/make_testdata.sh)
+/tests/data/

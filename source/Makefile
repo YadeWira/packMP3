@@ -172,7 +172,14 @@ $(TARGET): $(CLIOBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb
+.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb test
+
+# Regression suite: reversibility AND proof that each codec actually ran.
+# Generates its own corpus on first use. See tests/regression.sh for why the
+# second check exists -- a round-trip alone cannot see a dead codec.
+test: $(TARGET)
+	@bash ../tests/make_testdata.sh >/dev/null
+	@bash ../tests/regression.sh
 
 all: $(TARGET)
 

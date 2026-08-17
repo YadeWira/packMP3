@@ -59,6 +59,40 @@ above `vendor/packpng-src/source/packpng.h` in `packmp3.cpp` for the full
 history if rebuilding this from scratch.
 
 
+### Tests
+
+```bash
+cd source && make test
+```
+
+Generates a small synthetic corpus (`tests/make_testdata.sh`) and runs
+`tests/regression.sh`, which checks two separate things:
+
+1. **Reversibility** — compress, decompress, compare byte for byte.
+2. **That the codecs actually ran** — that every codec path a file is
+   supposed to exercise left its own trace.
+
+The second check exists because the first cannot see a dead codec.
+packMP3 stores data verbatim when a codec does not help, and cover-art
+recompression bails out silently on anything it does not like. Storing
+verbatim is perfectly reversible, so a build where every codec had
+stopped working would still round-trip every file byte-exact and pass a
+suite that only checked reversibility.
+
+The three codec paths do not signal the same way, which is the awkward
+part: the audio coder signals by the *absence* of its no-gain note,
+cover art by the *presence* of its own result line, and chunking by a
+field that is not in the compression output at all and has to be read
+back from the archive with `list`. Those were found by diffing a healthy
+run against a run with each path disabled, not by picking likely-looking
+lines.
+
+`PMP3_SIMULATE_DEAD=cover` (or `=chunks`) disables a codec with its own
+documented flag and is expected to fail — that is the run which proves
+the check works at all. `PMP3_ALLOW_MISSING_CODECS=1` skips check 2 and
+says so loudly in the output.
+
+
 ## Usage
 
 ```
