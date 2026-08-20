@@ -94,12 +94,26 @@ class aricoder
 	     truncations that would otherwise
 	     write a wrong file, minimum        120 bits
 
-	   64 sits between them with roughly 1.6x margin above the worst valid
-	   decode and 1.9x below the worst dangerous one. Note this is empirical,
-	   not structural: it holds because packMP3 keeps decoding the remaining
-	   frames (the frame count is in the header) and so burns through
-	   fabricated bits quickly. A format change that shortened that tail
-	   would need this re-measured, both sides.                            */
+	   That margin does NOT hold. Denser sampling -- 60 truncation depths per
+	   file instead of ten -- found a case that fabricates 32 bits, which is
+	   inside the valid range. The two populations do not merely touch, they
+	   OVERLAP, so no threshold can separate them: any value low enough to
+	   catch that case rejects valid archives.
+
+	   Keep this check anyway, and know what it is. It is a mitigation, not a
+	   guarantee. Measured over 216 dense truncation points: crashes and
+	   hangs go to zero and silently-wrong output drops from about 4-in-100
+	   to 1-in-216, but it does not reach zero and provably cannot.
+
+	   The reason is not a weakness in the threshold. A truncated archive can
+	   be a perfectly valid encoding of a DIFFERENT file -- packJPG confirmed
+	   the same property in its own coder by re-compressing the wrong output
+	   and getting the truncated input back, byte for byte. When that
+	   happens there is nothing in the data to detect. Closing it needs
+	   information the format does not carry: a declared payload length
+	   (kills truncation by construction, as packPNG demonstrated) or a
+	   checksum (the only thing that catches full-length corruption). Both
+	   are format changes.                                                  */
 	bool exhausted( void ) const { return past_eof_bits > 64; }
 
 	/* Latched once the decode is known to be running on data that is not a

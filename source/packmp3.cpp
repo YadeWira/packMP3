@@ -8271,7 +8271,7 @@ INTERN bool list_l2( void )
 	   real header -- but that the command answered a smaller question than
 	   the user was asking without saying so. It says so now. (Convention
 	   borrowed from packJPG, which hit the same format limitation.) */
-	fprintf( msgout, "  checked  : header only -- run `x` or `-ver` to verify the payload\n" );
+	if ( !module_mode ) fprintf( msgout, "  checked  : header only -- run `x` or `-ver` to verify the payload\n" );
 
 	pmpfilesize = (int) sz;
 	mp3filesize = 0;
@@ -8350,7 +8350,7 @@ INTERN bool list_pmp( void )
 		fprintf( msgout, "  rate     : %i Hz\n", ref_sr );
 		if ( !br_varies && ref_br > 0 ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", ref_br );
 		else                            fprintf( msgout, "  bitrate  : VBR / not global\n" );
-		fprintf( msgout, "  checked  : chunk table + every sub-stream header\n" );
+		if ( !module_mode ) fprintf( msgout, "  checked  : chunk table + every sub-stream header\n" );
 
 		pmpfilesize = (int) sz;
 		mp3filesize = 0;
@@ -8387,7 +8387,7 @@ INTERN bool list_pmp( void )
 	   The numbers were never wrong; the command answered a smaller question
 	   than the user was asking, without saying so. Convention borrowed from
 	   packJPG, which has the same format limitation. */
-	fprintf( msgout, "  checked  : header only -- run `x` or `-ver` to verify the payload\n" );
+	if ( !module_mode ) fprintf( msgout, "  checked  : header only -- run `x` or `-ver` to verify the payload\n" );
 
 	pmpfilesize = (int) sz;
 	mp3filesize = 0;
