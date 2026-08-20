@@ -8255,6 +8255,24 @@ INTERN bool list_l2( void )
 	if ( !vbr ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", bitrate );
 	else        fprintf( msgout, "  bitrate  : VBR / not global\n" );
 
+	/* What was actually verified, stated rather than implied.
+
+	   `list` reads the header and nothing else -- that is the whole point of
+	   the command, and decoding to answer it would cost exactly what the user
+	   ran `list` to avoid. But the consequence is that it cannot tell a
+	   complete archive from a truncated one: this container declares an
+	   11-byte prefix (23 with a cover-art record) and then a single
+	   arithmetic stream that runs to EOF with no length, no terminator in the
+	   byte domain and no checksum. Measured: over 99.99% of a real archive is
+	   undelimited, and every truncation from 11 bytes upward used to be
+	   reported as "1 ok" with plausible metadata.
+
+	   The defect was not that the numbers were wrong -- they are read from a
+	   real header -- but that the command answered a smaller question than
+	   the user was asking without saying so. It says so now. (Convention
+	   borrowed from packJPG, which hit the same format limitation.) */
+	fprintf( msgout, "  checked  : header only -- run `x` or `-ver` to verify the payload\n" );
+
 	pmpfilesize = (int) sz;
 	mp3filesize = 0;
 	return true;
@@ -8332,6 +8350,7 @@ INTERN bool list_pmp( void )
 		fprintf( msgout, "  rate     : %i Hz\n", ref_sr );
 		if ( !br_varies && ref_br > 0 ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", ref_br );
 		else                            fprintf( msgout, "  bitrate  : VBR / not global\n" );
+		fprintf( msgout, "  checked  : chunk table + every sub-stream header\n" );
 
 		pmpfilesize = (int) sz;
 		mp3filesize = 0;
@@ -8356,6 +8375,19 @@ INTERN bool list_pmp( void )
 	fprintf( msgout, "  rate     : %i Hz\n", g_samplerate );
 	if ( g_bitrate > 0 ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", g_bitrate );
 	else                 fprintf( msgout, "  bitrate  : VBR / not global\n" );
+
+	/* Header-only, and it says so. list reads the 11-byte prefix and nothing
+	   else -- which is the point of the command, decoding to answer it would
+	   cost exactly what the user ran list to avoid. The consequence is that it
+	   cannot distinguish a complete archive from a truncated one: after that
+	   prefix comes a single arithmetic stream running to EOF with no declared
+	   length, no byte-domain terminator and no checksum. Measured: over 99.99%
+	   of a real archive is undelimited, and every truncation from 11 bytes up
+	   was reported as "1 ok" with plausible metadata read from a real header.
+	   The numbers were never wrong; the command answered a smaller question
+	   than the user was asking, without saying so. Convention borrowed from
+	   packJPG, which has the same format limitation. */
+	fprintf( msgout, "  checked  : header only -- run `x` or `-ver` to verify the payload\n" );
 
 	pmpfilesize = (int) sz;
 	mp3filesize = 0;
