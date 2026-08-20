@@ -205,6 +205,10 @@ unsigned char aricoder::read_bit( void )
 		if ( sptr->read( &bbyte, 1, 1 ) == 0 ) {
 			bbyte = 0;           // no more data left in the stream
 			past_eof_bits += 8;  // remember it was fabricated, not read
+			// Latch here rather than testing the threshold per decoded
+			// symbol: this branch runs once per byte and only 4 times in a
+			// whole valid decode, while decode_ari runs millions of times.
+			if ( past_eof_bits > 64 ) corrupt = true;
 		} else {
 			past_eof_bits = 0;   // real data again -- not a truncated tail
 		}

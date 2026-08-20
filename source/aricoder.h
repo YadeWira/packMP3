@@ -308,11 +308,16 @@ static inline int decode_ari( aricoder* decoder, model_s* model )
 		count = decoder->decode_count( &s );
 		c = model->convert_symbol_to_int( count, &s );
 		decoder->decode( &s );
-		if ( decoder->exhausted() || model->invalid_escape() ) {
-			decoder->mark_corrupt();
-			return 0;
-		}
-	} while ( c == ESCAPE_SYMBOL );
+		if ( c != ESCAPE_SYMBOL ) break;
+		// Only on the escape path. Escapes are rare next to symbols, and the
+		// invalid-escape flag can only change here, so testing it per symbol
+		// was pure cost in the hot loop.
+		if ( model->invalid_escape() ) { decoder->mark_corrupt(); return 0; }
+	} while ( true );
+
+	// One bool load per symbol: exhaustion is latched inside read_bit, so
+	// there is no arithmetic left to do here.
+	if ( decoder->is_corrupt() ) return 0;
 	model->update_model( c );
 	
 	return c;
@@ -348,10 +353,7 @@ static inline int decode_ari( aricoder* decoder, model_b* model )
 	count = decoder->decode_count( &s );
 	c = model->convert_symbol_to_int( count, &s );
 	decoder->decode( &s );
-	if ( decoder->exhausted() ) {
-		decoder->mark_corrupt();
-		return 0;
-	}
+	if ( decoder->is_corrupt() ) return 0;
 	model->update_model( c );
 	
 	return c;
