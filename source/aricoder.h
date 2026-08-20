@@ -83,10 +83,23 @@ class aricoder
 	   producing plausible garbage: it has crashed, hung, and -- worst --
 	   completed with exit 0 while writing a file that is NOT the original.
 
-	   A valid decode fabricates exactly 32 bits, measured identically on
-	   every archive tested, so this 64-bit threshold cannot fire on
-	   well-formed input while still catching truncation long before the
-	   model can wander out of range.                                      */
+	   The threshold needs SEPARATION, which is two measurements, not one --
+	   a point packJPG made after measuring its own coder, where the two
+	   populations turned out to be 2 bits apart and a threshold like this
+	   one would have missed every dangerous case. Measured here over 10
+	   archives (synthetic and real, mono/stereo, CBR/VBR, MPEG-1 and
+	   MPEG-2, with and without cover art):
+
+	     valid decodes                       24 to 40 bits fabricated
+	     truncations that would otherwise
+	     write a wrong file, minimum        120 bits
+
+	   64 sits between them with roughly 1.6x margin above the worst valid
+	   decode and 1.9x below the worst dangerous one. Note this is empirical,
+	   not structural: it holds because packMP3 keeps decoding the remaining
+	   frames (the frame count is in the header) and so burns through
+	   fabricated bits quickly. A format change that shortened that tail
+	   would need this re-measured, both sides.                            */
 	bool exhausted( void ) const { return past_eof_bits > 64; }
 
 	/* Latched once the decode is known to be running on data that is not a
