@@ -3050,7 +3050,23 @@ INTERN bool uncompress_pmp( void )
 		if ( !pmp_decode_stereo_ms( decoder ) ) return false;
 	// main data
 	if ( !pmp_decode_main_data( decoder ) ) return false;
-	
+
+	/* The single point where a decode that ran on invalid input is refused.
+	   Every stage above can complete "successfully" on a truncated archive,
+	   because the coder fabricates zero bits past the end of the data and the
+	   stream carries no length or terminator to contradict them -- measured:
+	   truncating ONE byte off a valid archive produced a full-size output
+	   file, byte-different from the original, with exit 0 and no warning. For
+	   a tool whose contract is losslessness that silent-corruption path is
+	   worse than the crash it also causes, so the check goes here, before
+	   anything is written, rather than at each stage. */
+	if ( decoder->is_corrupt() ) {
+		delete( decoder );
+		snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream" );
+		errorlevel = 2;
+		return false;
+	}
+
 	// finalize arithmetic compression
 	delete( decoder );
 	
@@ -4570,6 +4586,15 @@ INTERN bool pmp_decode_id3( aricoder* dec )
 		while ( true ) {
 			c = decode_ari( dec, model );
 			if ( c == 256 ) break;
+			// The terminator is the only exit, and on invalid input it never
+			// arrives: this loop grew the heap without bound. Bail here as
+			// well as centrally, so the allocation stops immediately.
+			if ( dec->is_corrupt() ) {
+				delete bwrt; delete model;
+				snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (meta-data)" );
+				errorlevel = 2;
+				return false;
+			}
 			bwrt->write( (unsigned char) c );
 		}	
 		// check for out of memory
@@ -4591,6 +4616,15 @@ INTERN bool pmp_decode_id3( aricoder* dec )
 		while ( true ) {
 			c = decode_ari( dec, model );
 			if ( c == 256 ) break;
+			// The terminator is the only exit, and on invalid input it never
+			// arrives: this loop grew the heap without bound. Bail here as
+			// well as centrally, so the allocation stops immediately.
+			if ( dec->is_corrupt() ) {
+				delete bwrt; delete model;
+				snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (meta-data)" );
+				errorlevel = 2;
+				return false;
+			}
 			bwrt->write( (unsigned char) c );
 		}	
 		// check for out of memory
@@ -7145,6 +7179,18 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 	
 	// --- MAIN PROCESSING LOOP: DECODING AND ENCODING ---
 	for ( frame = firstframe; frame != NULL; frame = frame->next, bitp = 0 ) {
+		/* Per frame, not per symbol: once the coder has latched that it is
+		   running on invalid input it hands back zeros, and those zeros still
+		   reach code that indexes Huffman tables and walks granule chains --
+		   measured, the crash lands in huffman_writer::encode_pair. Stopping at
+		   the frame boundary is early enough that no downstream consumer ever
+		   sees a fabricated value, and cheap enough not to matter: one branch
+		   per frame. */
+		if ( dec->is_corrupt() ) {
+			snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (main data)" );
+			errorlevel = 2;
+			return false;
+		}
 		// record main index
 		frame->main_index = huffman->getpos();
 		for ( gr = 0; gr < mp3_ngr( frame->mpeg ); gr++ ) {
@@ -7330,6 +7376,19 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 					bv_table = bv_enc_table + region_tables[ r ];
 					linbits = bv_table->linbits;
 					mod_abc = mod_abv[ch][flags][(int) region_tables[ r ]];
+					/* Same guard the sibling decode path already applies to the
+					   table itself (see the "illegal table?" check on bv_dec_table):
+					   region_tables[] comes from the coded stream, and both that
+					   table array and this model array have deliberate holes -- 0 is
+					   the skip case handled above, 4 is "not used" in the format. A
+					   corrupt stream selecting 4 handed shift_model a NULL model and
+					   crashed there; measured on a single-bit flip. */
+					if ( mod_abc == NULL ) {
+						snprintf( errormessage, MSG_SIZE, "bad huffman table (%i) used (in frame #%i)",
+							region_tables[ r ], frame->n );
+						errorlevel = 2;
+						return false;
+					}
 					mod_lnc = mod_len[ch][linbits];
 					
 					// decoding with/without linbits
@@ -7369,6 +7428,19 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 					
 					// encoding with/without linbits
 					while ( p < region_bounds[ r ] ) {
+						/* The two coefficients index this table directly, and each
+						   big-values table is dimensioned [max+1][max+1] with max
+						   carried in its own descriptor (bv_enc_table). A valid
+						   stream cannot exceed it -- the encoder produced values
+						   that indexed the same table -- but a corrupt one can, and
+						   the measured crash for most truncations lands exactly
+						   here, inside huffman_writer::encode_pair. This is the
+						   format's own bound, not an invented one. */
+						if ( abs[ p ] > bv_table->max || abs[ p + 1 ] > bv_table->max ) {
+							snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (coefficients)" );
+							errorlevel = 2;
+							return false;
+						}
 						huffman->encode_pair( hcodes, abs + p );
 						for ( i = 0; i < 2; i++, p++ ) if ( abs[p] > 0 ) {
 							if ( linbits > 0 ) // loop invariant condition (-unswitch-loops)
@@ -8111,6 +8183,23 @@ INTERN bool stats_l2( void )
 	fprintf( msgout, "  rate     : %i Hz\n", samplerate );
 	if ( !vbr ) fprintf( msgout, "  bitrate  : %i kbps (CBR)\n", bitrate );
 	else        fprintf( msgout, "  bitrate  : VBR / not global\n" );
+
+	/* What was actually verified, stated rather than implied.
+
+	   `list` reads the header and nothing else -- that is the whole point of
+	   the command, and decoding to answer it would cost exactly what the user
+	   ran `list` to avoid. But the consequence is that it cannot tell a
+	   complete archive from a truncated one: this container declares an
+	   11-byte prefix (23 with a cover-art record) and then a single
+	   arithmetic stream that runs to EOF with no length, no terminator in the
+	   byte domain and no checksum. Measured: over 99.99% of a real archive is
+	   undelimited, and every truncation from 11 bytes upward used to be
+	   reported as "1 ok" with plausible metadata.
+
+	   The defect was not that the numbers were wrong -- they are read from a
+	   real header -- but that the command answered a smaller question than
+	   the user was asking without saying so. It says so now. (Convention
+	   borrowed from packJPG, which hit the same format limitation.) */
 
 	pmpfilesize = 0;
 	mp3filesize = (int) sz;

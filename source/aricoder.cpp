@@ -29,6 +29,8 @@ aricoder::aricoder( iostream* stream, int iomode )
 	
 	// store pointer to iostream for reading/writing
 	sptr = stream;
+	past_eof_bits = 0;
+	corrupt = false;
 	
 	// store i/o mode
 	mode = iomode;
@@ -200,8 +202,12 @@ unsigned char aricoder::read_bit( void )
 {
 	// read in new byte if needed
 	if ( cbit == 0 ) {
-		if ( sptr->read( &bbyte, 1, 1 ) == 0 ) // read next byte if available
-			bbyte = 0; // if no more data is left in the stream
+		if ( sptr->read( &bbyte, 1, 1 ) == 0 ) {
+			bbyte = 0;           // no more data left in the stream
+			past_eof_bits += 8;  // remember it was fabricated, not read
+		} else {
+			past_eof_bits = 0;   // real data again -- not a truncated tail
+		}
 		cbit = 8;
 	}
 	
@@ -232,7 +238,8 @@ model_s::model_s( int max_s, int max_c, int max_o, int c_lim )
 	
 	
 	// set error false
-	error = false;	
+	error = false;
+	escaped_past_null = false;	
 	
 	// copy settings into model
 	max_symbol  = max_s;
@@ -604,6 +611,8 @@ int model_s::convert_symbol_to_int( int count, symbol *s )
 			s->low_count  = grand_total;
 			s->high_count = s->scale;
 			lazy_populate_scoreboard( context );
+			// already at the order(-1) fallback: see invalid_escape()
+			if ( current_order < 0 ) escaped_past_null = true;
 			current_order--;
 			return ESCAPE_SYMBOL;
 		}
@@ -626,6 +635,8 @@ int model_s::convert_symbol_to_int( int count, symbol *s )
 	s->high_count = totals[ c - 1 ];
 	// send escape if escape symbol encountered
 	if ( c == 1 ) {
+		// already at the order(-1) fallback: see invalid_escape()
+		if ( current_order < 0 ) escaped_past_null = true;
 		current_order--;
 		return ESCAPE_SYMBOL;
 	}

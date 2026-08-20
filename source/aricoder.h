@@ -71,6 +71,30 @@ class aricoder
 	void encode( symbol* s );
 	unsigned int decode_count( symbol* s );
 	void decode( symbol* s );
+
+	/* ---- corrupt-input detection (decode side) ---------------------------
+	   The coded stream carries no length and no end marker in the byte
+	   domain, so the decoder cannot tell "the data ended" from "the next
+	   symbol is a zero". read_bit() substitutes zero bytes forever once the
+	   stream runs out, which a correct decode NEEDS in small amounts (the
+	   31-bit prefill in the constructor means every valid decode reads a
+	   little past its last encoded byte) but which on a truncated archive
+	   becomes an endless supply of fabricated bits. The decoder then keeps
+	   producing plausible garbage: it has crashed, hung, and -- worst --
+	   completed with exit 0 while writing a file that is NOT the original.
+
+	   A valid decode fabricates exactly 32 bits, measured identically on
+	   every archive tested, so this 64-bit threshold cannot fire on
+	   well-formed input while still catching truncation long before the
+	   model can wander out of range.                                      */
+	bool exhausted( void ) const { return past_eof_bits > 64; }
+
+	/* Latched once the decode is known to be running on data that is not a
+	   valid stream: by exhaustion above, or by the model reporting an escape
+	   below the order(-1) fallback. Decode loops must consult this -- see
+	   the note in decode_ari. */
+	void mark_corrupt( void ) { corrupt = true; }
+	bool is_corrupt( void ) const { return corrupt; }
 	
 	private:
 	// bitwise operations
@@ -82,6 +106,8 @@ class aricoder
 	int mode;
 	unsigned char bbyte;
 	unsigned char cbit;
+	int  past_eof_bits;  // bits fabricated after the stream ran out
+	bool corrupt;        // latched: input is not a valid stream
 	
 	// arithmetic coding variables
 	unsigned int ccode;
@@ -111,8 +137,20 @@ class model_s
 	int  convert_int_to_symbol( int c, symbol *s );
 	void get_symbol_scale( symbol *s );
 	int  convert_symbol_to_int( int count, symbol *s );
+
+	/* True once an escape was decoded while already at the order(-1)
+	   fallback. contexts[] is storage+1, so index -1 is a real slot holding
+	   the uniform null table -- escaping from there is impossible for a
+	   well-formed stream, because once any symbol remains un-excluded the
+	   escape has zero probability width. Corrupt input can walk into it,
+	   and the next context read would be contexts[-2], outside the
+	   allocation. Reported rather than clamped: clamping leaves the decoder
+	   escaping at the same order forever, which measured as a livelock --
+	   worse for a user than the crash it replaced. */
+	bool invalid_escape( void ) const { return escaped_past_null; }
 	
 	bool error;
+	bool escaped_past_null;
 	
 	
 	private:
@@ -250,11 +288,30 @@ static inline int decode_ari( aricoder* decoder, model_s* model )
 	unsigned int count;
 	int c;
 
+	/* Once the input is known to be invalid, stop feeding the model and hand
+	   back symbol 0.
+
+	   Returning 0 rather than a sentinel is deliberate. Callers use this
+	   return value directly as an array index, a loop bound or a struct
+	   field, at ~60 call sites, so a sentinel does not stop the damage -- it
+	   relocates it. An earlier attempt at this bound returned ESCAPE_SYMBOL,
+	   which is CODER_LIMIT025 (536870912); callers then used that as a real
+	   symbol and the crash simply moved elsewhere. Symbol 0 exists in every
+	   model this coder is used with, so it is inert.
+
+	   The decode is not finished here, only made harmless: the outer decode
+	   loops check is_corrupt() and abort with a diagnostic. */
+	if ( decoder->is_corrupt() ) return 0;
+
 	do{
 		model->get_symbol_scale( &s );
 		count = decoder->decode_count( &s );
 		c = model->convert_symbol_to_int( count, &s );
-		decoder->decode( &s );	
+		decoder->decode( &s );
+		if ( decoder->exhausted() || model->invalid_escape() ) {
+			decoder->mark_corrupt();
+			return 0;
+		}
 	} while ( c == ESCAPE_SYMBOL );
 	model->update_model( c );
 	
@@ -282,10 +339,19 @@ static inline int decode_ari( aricoder* decoder, model_b* model )
 	unsigned int count;
 	int c;
 
+	// Same reasoning as the model_s overload above: 0 is inert, a sentinel
+	// is not. The binary model has no escape mechanism, so exhaustion is the
+	// only signal that applies here.
+	if ( decoder->is_corrupt() ) return 0;
+
 	model->get_symbol_scale( &s );
 	count = decoder->decode_count( &s );
 	c = model->convert_symbol_to_int( count, &s );
-	decoder->decode( &s );	
+	decoder->decode( &s );
+	if ( decoder->exhausted() ) {
+		decoder->mark_corrupt();
+		return 0;
+	}
 	model->update_model( c );
 	
 	return c;
