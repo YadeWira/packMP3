@@ -529,6 +529,48 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
 
 ## History
 
+* **v3.0f** — a truncated or corrupt archive is now refused instead of
+  crashing, hanging, or quietly producing the wrong file. Read the last
+  paragraph before updating: some archives that appeared to work will now
+  be rejected.
+
+  Decoding a damaged `.pm3` could end three ways, and the third is the one
+  that mattered: it crashed, it spun forever, or it ran to completion,
+  printed `1 ok`, exited 0 and wrote a file that was **not** the original.
+  Truncating a single byte off a valid archive produced a full-size output
+  differing from the source at byte 193310, with no error and no warning.
+  Four checks now stop that, each using a bound the format itself supplies
+  — stream exhaustion, an escape below the coder's lowest context,
+  coefficients outside their own Huffman table's declared maximum, and a
+  statistical model that was never allocated.
+
+  **What this does not do is detect more corruption.** Measured with each
+  check disabled in turn: the number of damaged archives that still decode
+  to a wrong file is the same with them and without them. What changes is
+  how the rest fail. Over 216 truncation points, crashes and hangs go to
+  zero; over 200 single-bit corruptions of a full-length archive, 38
+  crashes become clean rejections. Silently-wrong output drops from about
+  4-in-100 to 1-in-216 and does not reach zero — and provably cannot,
+  because a truncated archive can be a valid encoding of a *different*
+  file. Where that happens there is nothing in the data to detect. Closing
+  it needs information this format does not carry, either a declared
+  payload length or a checksum, and that is a format change.
+
+  `list` now states what it verified: `header only` for the plain and
+  Layer I/II containers, which after an 11-byte prefix are a single
+  undelimited stream, and `chunk table + every sub-stream header` for
+  chunked archives, the one container where every byte is length-accounted.
+  `list -module` is unchanged, byte for byte, so machine consumers are not
+  affected.
+
+  No format change and full compatibility in both directions, verified
+  against every published 3.0x binary rather than assumed: archives from
+  v3.0 through v3.0e decode byte-exact here, archives written here decode
+  byte-exact there, and the `.pm3` this build produces is byte-identical to
+  v3.0e's across a 104-file corpus. The one visible consequence: a damaged
+  archive that v3.0e decoded with exit 0 will now be refused. That output
+  was never your original file, but if you did not know that, it will look
+  like something stopped working.
 * **v3.0e** — fixes a crash on malformed input. `list` segfaulted on a
   truncated chunked (`-k`) archive: the chunk table is four bytes per
   chunk, and neither the lister nor the decoder checked the file was long

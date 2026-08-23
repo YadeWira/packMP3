@@ -475,10 +475,10 @@ INTERN const unsigned char appversion_legacy_min = 20;
 // already ahead, at 31, from the v3.0 cycle's own additions).
 INTERN const unsigned char displayversion_major = 3;
 INTERN const unsigned char displayversion_minor = 0;
-INTERN const char*  subversion   = "e";
+INTERN const char*  subversion   = "f";
 INTERN const char*  apptitle     = "packMP3";
 INTERN const char*  appname      = "packMP3";
-INTERN const char*  versiondate  = "08/17/2026";
+INTERN const char*  versiondate  = "08/22/2026";
 INTERN const char*  author       = "Yade Bravo";
 #if !defined( BUILD_LIB )
 INTERN const char*  website      = "https://github.com/YadeWira/packMP3";
