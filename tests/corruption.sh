@@ -95,6 +95,17 @@ for _ in range(k):
 open(dst, 'wb').write(d)
 PY
 
+# Frame count: big-endian at offset 7. Not a guess -- the value was read back
+# out of a real archive to confirm offset and byte order, after a first probe
+# wrote it little-endian and produced a spurious timeout that looked like a
+# hang bug.
+cat > "$WORK/hdr.py" <<'HDR'
+import sys, struct
+d = bytearray(open(sys.argv[1], 'rb').read())
+d[7:11] = struct.pack('>I', int(sys.argv[3]) & 0xFFFFFFFF)
+open(sys.argv[2], 'wb').write(d)
+HDR
+
 flip_file() { # $1 archive $2 out $3 seed $4 nflips
 	python3 "$WORK/flip.py" "$1" "$2" "$3" "$4" || return 1
 	[ -s "$2" ] || return 1
@@ -225,6 +236,20 @@ guards() { # $1 binary -- sets g_missing
 		out=$( timeout 60 "$bin" x -o -np -od"$WORK/out" "$WORK/g.pm3" 2>&1 )
 		case $out in *"$want"*) ;; *) echo "$want";; esac
 	done > "$WORK/missing.txt"
+
+	# The two header guards are not reachable by flipping bits in a stream: the
+	# frame count sits at a fixed offset and a random flip almost never lands a
+	# value that is both wrong and interesting. Crafted directly instead. Both
+	# of these crashed every build up to and including v3.0f, and both are
+	# reachable with a hand-made file rather than a damaged one.
+	for v in 0 4294967295; do
+		python3 "$WORK/hdr.py" "$arch" "$WORK/h.pm3" "$v" 2>/dev/null || {
+			echo "frame count (generator failed)" >> "$WORK/missing.txt"; continue; }
+		rm -rf "$WORK/out"; mkdir -p "$WORK/out"
+		out=$( timeout 60 "$bin" x -o -np -od"$WORK/out" "$WORK/h.pm3" 2>&1 )
+		case $out in *"frame count"*) ;; *) echo "frame count nframes=$v" >> "$WORK/missing.txt";; esac
+	done
+
 	g_missing=$( tr '\n' ',' < "$WORK/missing.txt" | sed 's/,$//; s/,/, /g' )
 }
 
@@ -234,7 +259,7 @@ sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
 guards "$BIN"
 if [ -z "$g_missing" ]; then
-	echo "                         every guard fired on its own case (6/6)"
+	echo "                         every guard fired on its own case (8/8: 6 seeded + 2 crafted headers)"
 else
 	echo "                         GUARDS NOT REACHED: $g_missing"
 fi
