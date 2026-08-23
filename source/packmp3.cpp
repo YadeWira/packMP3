@@ -155,6 +155,10 @@ extern "C" { int _dowildcard = -1; }
 #define COEF_BUF_SIZE	( COEF_SLOTS + 1 + 1 )
 #define COEF_MAX_POS	576
 
+/* Last valid index of bandwidth_bounds[][][], declared as [22+1] in
+   pmp3tbl.h. Pinned below so the bound and the table cannot drift. */
+#define BANDWIDTH_BOUNDS_MAX	22
+
 /* Pin the RELATIONSHIPS, not the spellings. Each of these bounds is only
    correct relative to a buffer size declared elsewhere, and the two are free
    to drift apart in an edit that looks local and safe. Asserting the property
@@ -171,6 +175,9 @@ static_assert( COEF_MAX_POS + 1 < COEF_SLOTS,
 	"coefficient bound must leave room for the abs[p+1] read" );
 static_assert( 1 + COEF_SLOTS <= COEF_BUF_SIZE,
 	"the +1 pointer offset plus the memset span must fit the allocation" );
+static_assert( BANDWIDTH_BOUNDS_MAX + 1 ==
+	(int)( sizeof( bandwidth_bounds[0][0] ) / sizeof( bandwidth_bounds[0][0][0] ) ),
+	"BANDWIDTH_BOUNDS_MAX must track the bandwidth_bounds row length" );
 
 // special realloc with guaranteed free() of previous memory
 static inline void* frealloc( void* ptr, size_t size ) {
@@ -5953,6 +5960,28 @@ INTERN inline bool pmp_decode_region_data( aricoder* dec )
 				// region 1
 				shift_model( mod_s1, s_r0, s_r2 );
 				granule->region1_size = decode_ari( dec, mod_s1 );
+				/* Both region sizes come out of the arithmetic decoder and are
+				   added straight into an index over a 23-entry table. The
+				   region_bounds check further down catches the CONSEQUENCE -- a
+				   nonsense bound -- but by then the invalid read has already
+				   happened, and the value it returned is what that check then
+				   inspects. Measured under UBSan on a single-bit flip: "index 23
+				   out of bounds for type 'int [23]'", on an archive the release
+				   build rejects with a tidy "bad huffman table" message.
+
+				   Largest legitimate indices over 54 valid files: 16 for the
+				   first, 21 for the second, against a valid 0..22. Rejected
+				   rather than clamped, as everywhere else here: a clamped index
+				   yields a legal-looking region bound built from a value the
+				   file never contained. */
+				if ( ( s_r0 < 0 ) || ( s_r0 + 1 > BANDWIDTH_BOUNDS_MAX ) ||
+					 ( granule->region1_size < 0 ) ||
+					 ( s_r0 + granule->region1_size + 2 > BANDWIDTH_BOUNDS_MAX ) ) {
+					snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (region sizes %i/%i)",
+						s_r0, (int) granule->region1_size );
+					errorlevel = 2;
+					return false;
+				}
 				// set region 1/2 bounds
 				granule->region_bound[0] =
 					bandwidth_bounds[(int)i_mpeg][(int)i_samplerate][s_r0+1];

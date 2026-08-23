@@ -172,7 +172,7 @@ $(TARGET): $(CLIOBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb test fuzzbuild corrupt corrupt-control
+.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb test fuzzbuild corrupt corrupt-control corrupt-asan
 
 # Regression suite: reversibility AND proof that each codec actually ran.
 # Generates its own corpus on first use. See tests/regression.sh for why the
@@ -194,6 +194,27 @@ corrupt: $(TARGET)
 corrupt-control: $(TARGET)
 	@bash ../tests/make_testdata.sh >/dev/null
 	@PMP3_CORRUPT_CONTROL=$(CONTROL) bash ../tests/corruption.sh
+
+# The corruption regimes run against the sanitizer build.
+#
+# This target exists because the two halves were already here and nothing
+# joined them: `fuzzbuild` produces an ASAN+UBSan binary and then prints a
+# line telling a human to run it, and corruption.sh carries the damaged
+# inputs worth running it on. An instrument that waits for someone to supply
+# the hard part does not get used -- packJPG has a libFuzzer harness aimed at
+# exactly the function where its out-of-bounds read lives, plus an empty
+# fuzz_regressions/ directory, and neither was ever run because the tree
+# holds no seed corpus. The tool was never the missing piece.
+#
+# abort_on_error=1 turns a sanitizer finding into SIGABRT, which the suite
+# already classifies as a crash and fails on. Without it ASAN exits 1 and
+# the run reads as a clean rejection.
+corrupt-asan: $(TARGET)-fuzz
+	@bash ../tests/make_testdata.sh >/dev/null
+	@ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
+		PMP3_BIN=$(CURDIR)/$(TARGET)-fuzz bash ../tests/corruption.sh
+
+$(TARGET)-fuzz: fuzzbuild
 
 all: $(TARGET)
 

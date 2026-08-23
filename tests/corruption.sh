@@ -202,8 +202,9 @@ sweep() { # $1 binary $2 label
 #   2:1         coefficient magnitude past the Huffman table maximum
 #   10:1        ancillary size outside the LAME prediction buffer
 #   25:1        arithmetic decoder exhausted while reading main data
-#   114:3       sv_bound outside the granule  <- the rare one, 2 in 800
-#   139:1       Huffman table index with no model behind it
+#   114:3       sv_bound outside the granule  <- the rare one, 3 in 1000
+#   139:1       region sizes indexing past bandwidth_bounds[23]
+#   364:1       Huffman table index with no model behind it
 guards() { # $1 binary -- sets g_missing
 	local bin=$1 arch ref spec seed k want out
 	g_missing=""
@@ -216,7 +217,7 @@ guards() { # $1 binary -- sets g_missing
 	arch="$WORK/a/plain.pm3"
 	[ -s "$arch" ] || { g_missing=" (could not build plain.pm3)"; return; }
 	printf '%s\n' "2:1:coefficients" "10:1:ancillary size" "25:1:main data" \
-		"114:3:sv_bound" "139:1:bad huffman table" | while IFS= read -r spec; do
+		"114:3:sv_bound" "139:1:region sizes" "364:1:bad huffman table" | while IFS= read -r spec; do
 		seed=${spec%%:*}; spec=${spec#*:}; k=${spec%%:*}; want=${spec#*:}
 		flip_file "$arch" "$WORK/g.pm3" "$seed" "$k" || { echo "$want"; continue; }
 		rm -rf "$WORK/out"; mkdir -p "$WORK/out"
@@ -233,7 +234,7 @@ sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
 guards "$BIN"
 if [ -z "$g_missing" ]; then
-	echo "                         every guard fired on its own case (5/5)"
+	echo "                         every guard fired on its own case (6/6)"
 else
 	echo "                         GUARDS NOT REACHED: $g_missing"
 fi
