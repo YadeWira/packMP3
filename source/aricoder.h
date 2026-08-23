@@ -105,9 +105,25 @@ class aricoder
 	   A corruption guard is not symmetric. A false positive -- refusing a
 	   good archive -- is unacceptable. A false negative just leaves the
 	   previous behaviour. So the number to protect is the maximum on the
-	   VALID side, 40, and 64 clears it with room while still catching
-	   nearly everything above it. Overlap kills the guarantee, not the
-	   guard.
+	   VALID side, and 64 clears it while still catching nearly everything
+	   above. Overlap kills the guarantee, not the guard.
+
+	   And that valid-side maximum is STRUCTURAL, not a sample high-water
+	   mark, which is what makes 64 safe rather than lucky. Measured over 84
+	   valid decodes the fabricated-bit count takes exactly three values --
+	   24, 32 and 40, i.e. 3, 4 and 5 bytes -- and nothing else, ever. The
+	   mechanism is the constructor's prefill: it pulls CODER_USE_BITS = 31
+	   bits before decoding starts, and 31 bits spans 4 byte-fetches, plus
+	   or minus one depending on where the last real byte falls relative to
+	   the byte boundary. 3 to 5 bytes is the whole range the coder can
+	   produce, so 40 is a ceiling and not a maximum-so-far. It moves only
+	   if CODER_USE_BITS moves.
+
+	   Corroboration from a sibling: packJPG measured its own ceiling across
+	   image classes -- baseline, progressive, CMYK, greyscale and
+	   synthetic 590 KB metadata -- and got 34 bits, flat, with the class it
+	   had predicted would be worst coming in below average. Two coders,
+	   two entirely different axes of variation, both flat.
 
 	   Measured over the same 216 dense truncation points, v3.0e as the
 	   baseline and this check disabled in the middle row:
