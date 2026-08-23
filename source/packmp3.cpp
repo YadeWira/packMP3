@@ -142,6 +142,15 @@ extern "C" { int _dowildcard = -1; }
    encode-path clamp as dead when their run had only exercised decode. Here
    the clamp is on the hot path and simply never has anything to do.
 
+   And the probe behind those numbers was verified BY CAUSE, not by the fact
+   that it produced output: a counter that increments proves the probe is
+   evaluated, not that its firing branch can report. Injecting an out-of-range
+   value immediately before the check turns 0 firings into 1236 of 1236, on
+   both sides of the bound. Without that, "0 of 30688" and a probe whose
+   reporting branch never worked are the same text. (The worst-value tracker
+   only follows the maximum, so it reads -1 for the negative side; the firing
+   count is what carries the result.)
+
    So it is neither of the two things a clamp usually is. It is not arithmetic
    on a value that legitimately exceeds the range, because valid files never
    reach it. And it is not reachable masking, because no corruption tried here
