@@ -119,11 +119,17 @@ class aricoder
 	   produce, so 40 is a ceiling and not a maximum-so-far. It moves only
 	   if CODER_USE_BITS moves.
 
-	   Corroboration from a sibling: packJPG measured its own ceiling across
-	   image classes -- baseline, progressive, CMYK, greyscale and
-	   synthetic 590 KB metadata -- and got 34 bits, flat, with the class it
-	   had predicted would be worst coming in below average. Two coders,
-	   two entirely different axes of variation, both flat.
+	   Corroboration from a sibling, which came out stronger than expected:
+	   packJPG measured its own distribution and got the SAME three values,
+	   24/32/40, from the same CODER_USE_BITS = 31 and the same prefill.
+	   Two codecs, two formats, one mechanism.
+
+	   Do NOT tighten 64 towards 40 on the strength of that ceiling. It is
+	   tempting once the ceiling is known, and it buys nothing measured: the
+	   one dangerous case that still slips through this check fabricates 32
+	   bits, inside the valid range, so no threshold above the ceiling can
+	   catch it. Lowering only spends the margin that protects against
+	   CODER_USE_BITS changing under us.
 
 	   Measured over the same 216 dense truncation points, v3.0e as the
 	   baseline and this check disabled in the middle row:
