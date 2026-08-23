@@ -5,7 +5,7 @@
 # turns into a crash, a hang, or -- as far as the format allows -- a silently
 # wrong file.
 #
-# WHY THIS EXISTS, AND WHY IT DECLARES FOUR REGIMES INSTEAD OF ONE.
+# WHY THIS EXISTS, AND WHY IT DECLARES FIVE REGIMES INSTEAD OF ONE.
 #
 # Every corruption sweep run against packMP3 up to 2026-08-22 truncated by
 # PERCENTAGE: 2%, 4%, ... 98%. Not one cut a handful of bytes off the end.
@@ -185,10 +185,58 @@ sweep() { # $1 binary $2 label
 	[ "$g_r4" -eq 0 ] && g_empty="$g_empty multi-flip"
 }
 
-echo "packMP3 corruption suite -- four regimes, declared here rather than chosen per run"
+# REGIME 5: every guard by name.
+#
+# The four sweeps above measure the POPULATION. They do not pin any individual
+# check, and a rare one can vanish without moving the totals: instrumenting
+# sv_bound over the whole grid shows it never once leaves the valid range, and
+# over 800 flipped archives it fires exactly twice, 0.25%. Delete that guard
+# and the sweeps stay green -- while the archive that made it necessary writes
+# 1102 bytes 524 bytes before a 580-byte buffer.
+#
+# So each guard gets a deterministic case that must produce ITS message. The
+# seeds were found by scanning, not chosen; the flip generator is the same one
+# the sweeps use, so the archives regenerate byte-identically from the corpus.
+#
+#   seed:flips  guard
+#   2:1         coefficient magnitude past the Huffman table maximum
+#   10:1        ancillary size outside the LAME prediction buffer
+#   25:1        arithmetic decoder exhausted while reading main data
+#   114:3       sv_bound outside the granule  <- the rare one, 2 in 800
+#   139:1       Huffman table index with no model behind it
+guards() { # $1 binary -- sets g_missing
+	local bin=$1 arch ref spec seed k want out
+	g_missing=""
+	# Pinned to one named file: a seed only reproduces against the archive it
+	# was found on. The first version took whichever source sorted first,
+	# which was a different file, and reported all five guards missing.
+	rm -rf "$WORK/a"; mkdir -p "$WORK/a"
+	[ -f "$DATA/plain.mp3" ] || { g_missing=" (tests/data/plain.mp3 absent)"; return; }
+	"$bin" a -o -np -od"$WORK/a" "$DATA/plain.mp3" >/dev/null 2>&1
+	arch="$WORK/a/plain.pm3"
+	[ -s "$arch" ] || { g_missing=" (could not build plain.pm3)"; return; }
+	printf '%s\n' "2:1:coefficients" "10:1:ancillary size" "25:1:main data" \
+		"114:3:sv_bound" "139:1:bad huffman table" | while IFS= read -r spec; do
+		seed=${spec%%:*}; spec=${spec#*:}; k=${spec%%:*}; want=${spec#*:}
+		flip_file "$arch" "$WORK/g.pm3" "$seed" "$k" || { echo "$want"; continue; }
+		rm -rf "$WORK/out"; mkdir -p "$WORK/out"
+		# stdout AND stderr: msgout is stdout by default.
+		out=$( timeout 60 "$bin" x -o -np -od"$WORK/out" "$WORK/g.pm3" 2>&1 )
+		case $out in *"$want"*) ;; *) echo "$want";; esac
+	done > "$WORK/missing.txt"
+	g_missing=$( tr '\n' ',' < "$WORK/missing.txt" | sed 's/,$//; s/,/, /g' )
+}
+
+echo "packMP3 corruption suite -- five regimes, declared here rather than chosen per run"
 echo
 sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
+guards "$BIN"
+if [ -z "$g_missing" ]; then
+	echo "                         every guard fired on its own case (5/5)"
+else
+	echo "                         GUARDS NOT REACHED: $g_missing"
+fi
 
 ctl_ok=1
 if [ -n "$CONTROL" ] && [ -x "$CONTROL" ]; then
@@ -218,6 +266,11 @@ elif [ "$new_wrong" -lt "$BASELINE" ]; then
 	echo "        Lower PMP3_CORRUPT_BASELINE in this file to lock the improvement in."
 fi
 [ "$ctl_ok" = "0" ] && fail=1
+if [ -n "$g_missing" ]; then
+	echo "  FAIL: guard(s) did not fire on the case that requires them: $g_missing"
+	echo "        A population sweep cannot see a rare guard disappear."
+	fail=1
+fi
 if [ -n "$new_empty" ]; then
 	echo "  FAIL: regime(s) produced no cases:$new_empty"
 	echo "        A pass over a regime that never ran is not a pass."
