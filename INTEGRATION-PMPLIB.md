@@ -104,9 +104,19 @@ transfiere la propiedad al llamador**: internamente `getptr()` pone
 `fmem = false`, así que el destructor del stream ya **no** lo libera.
 
 - El buffer sale de `malloc`/`realloc` → liberalo con **`free()`** plano.
-- Si la conversión **falla** (`return false`), `*out_file`/`*out_size` **no
-  se tocan**. Inicializalos en `NULL`/`0` y no liberes nada.
+- Si la conversión **falla** (`return false`), `*out_file` queda en `NULL` y
+  `*out_size` en `0`, así que no hay nada que liberar.
 - No hay función `pmplib_free()`; `free()` es correcto y es la única opción.
+
+> **Cambio de comportamiento desde v3.0g.** Hasta v3.0f, un fallo dejaba
+> `*out_file`/`*out_size` **sin tocar**. Eso es inofensivo en una llamada
+> suelta, pero no en el loop que todo llamador termina escribiendo: si reusás
+> el mismo par de variables para varios archivos, un archivo rechazado te
+> dejaba el puntero y el tamaño del **archivo anterior**. Chequear el valor de
+> retorno alcanzaba para estar bien; chequear `out != NULL` en su lugar te daba
+> una respuesta plausible y equivocada. Desde v3.0g la función limpia los dos
+> slots al entrar, así que ese error dejó de ser posible. Si vendorizás una
+> versión anterior, reinicializá `out`/`outlen` **antes de cada llamada**.
 
 ---
 

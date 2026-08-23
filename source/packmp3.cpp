@@ -854,9 +854,21 @@ EXPORT bool pmplib_convert_stream2mem( unsigned char** out_file, unsigned int* o
 {
 	clock_t begin, end;
 	int total;
-	float cr;	
-	
-	
+	float cr;
+
+	/* Clear the caller's output slots on entry. On failure this function used
+	   to leave them untouched, which is safe for a single call but not for the
+	   loop every caller actually writes: reusing one pair of variables across
+	   files leaves a refused file holding the PREVIOUS file's pointer and size.
+	   A caller that checks the return value is fine either way, but one that
+	   checks `out != NULL` instead would read a buffer it already owns and
+	   probably freed, and get a plausible wrong answer rather than an error.
+	   Clearing makes that mistake unreachable instead of merely documented. */
+	if ( ( out_file != NULL ) && ( out_size != NULL ) ) {
+		*out_file = NULL;
+		*out_size = 0;
+	}
+
 	// (re)set buffers
 	reset_buffers();
 	action = A_COMPRESS;
