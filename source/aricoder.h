@@ -108,11 +108,18 @@ class aricoder
 	   VALID side, and 64 clears it while still catching nearly everything
 	   above. Overlap kills the guarantee, not the guard.
 
-	   The valid-side maximum is 5 byte-fetches, 40 bits. Over 84 valid
-	   decodes this counter takes exactly three values -- 24, 32 and 40,
-	   i.e. 3, 4 and 5 bytes -- and nothing else. The discreteness is real:
-	   the counter advances a byte at a time, because that is how read_bit
-	   pulls.
+	   The valid-side maximum is 5 byte-fetches, 40 bits. Over 390 valid
+	   decodes -- a parameter sweep across bitrate, mode, VBR quality and
+	   sample rate, plus real files -- this counter takes exactly three
+	   values and nothing else:
+
+	     3 fetches (24 bits)   125   32.1%
+	     4 fetches (32 bits)   262   67.2%
+	     5 fetches (40 bits)     3    0.8%
+	     6 fetches               0
+
+	   The discreteness is real: the counter advances a byte at a time,
+	   because that is how read_bit pulls.
 
 	   An earlier version of this comment called 40 STRUCTURAL and derived
 	   it: the prefill pulls CODER_USE_BITS = 31 bits, 31 bits spans four
@@ -151,13 +158,21 @@ class aricoder
 
 	   Lowering does buy something. Choosing 48 over 44 is the asymmetry
 	   again -- a false positive refuses a good archive and is unacceptable,
-	   a false negative only leaves the previous behaviour. The margin that
-	   buys, in the units this counter actually moves in: it is a strict
-	   >, so 48 tolerates a 6-byte fetch and rejects only at 7, against an
-	   observed valid maximum of 5. One spare fetch, and the observed
-	   maximum is empirical rather than proven, which is exactly why the
-	   spare one is kept. packJPG measured the same shape in its own coder
-	   and reached the same conclusion from the opposite starting point.
+	   a false negative only leaves the previous behaviour.
+
+	   The margin is better stated in the finer unit than in fetches, since
+	   counting how often 5 fetches happened does not bound how often 6
+	   could. A 6th fetch requires more than 40 bits consumed past
+	   exhaustion, and a 7th -- which is where this check actually fires,
+	   the test being a strict > -- requires more than 48. Instrumenting the
+	   bits actually consumed past exhaustion over the same 390 decodes
+	   gives a range of 22 to 39. So the guard fires at a demand this coder
+	   has never been observed to make, with 9 bits of headroom measured in
+	   the quantity that decides it rather than in the quantity that
+	   reports it.
+
+	   Still empirical. packJPG measured the same shape in its own coder and
+	   reached the same conclusion from the opposite starting point.
 
 	   Measured over the same 216 dense truncation points, v3.0e as the
 	   baseline and this check disabled in the middle row:
