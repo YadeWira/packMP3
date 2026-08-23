@@ -208,7 +208,7 @@ unsigned char aricoder::read_bit( void )
 			// Latch here rather than testing the threshold per decoded
 			// symbol: this branch runs once per byte and only 4 times in a
 			// whole valid decode, while decode_ari runs millions of times.
-			if ( past_eof_bits > 64 ) corrupt = true;
+			if ( past_eof_bits > MAX_FABRICATED_BITS ) corrupt = true;
 		} else {
 			past_eof_bits = 0;   // real data again -- not a truncated tail
 		}

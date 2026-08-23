@@ -124,12 +124,25 @@ class aricoder
 	   24/32/40, from the same CODER_USE_BITS = 31 and the same prefill.
 	   Two codecs, two formats, one mechanism.
 
-	   Do NOT tighten 64 towards 40 on the strength of that ceiling. It is
-	   tempting once the ceiling is known, and it buys nothing measured: the
-	   one dangerous case that still slips through this check fabricates 32
-	   bits, inside the valid range, so no threshold above the ceiling can
-	   catch it. Lowering only spends the margin that protects against
-	   CODER_USE_BITS changing under us.
+	   The threshold is 48 -- six bytes, one full byte above the five-byte
+	   ceiling -- and it was measured, not picked. An earlier version of this
+	   comment said not to tighten below 64 because doing so "buys nothing
+	   measured". That was wrong, and wrong the same way as several other
+	   claims in this file before they were corrected: it generalised from a
+	   single observed case. Over 383 truncations that would otherwise write
+	   a wrong file:
+
+	     threshold   caught   still slips
+	        44        380         3
+	        48        379         4
+	        64        376         7
+
+	   Lowering does buy something. Choosing 48 over 44 is the asymmetry
+	   again -- a false positive refuses a good archive and is unacceptable,
+	   a false negative only leaves the previous behaviour -- so a whole
+	   spare byte over the ceiling is worth one extra escaping case. packJPG
+	   measured the same shape in its own coder and reached the same
+	   conclusion from the opposite starting point.
 
 	   Measured over the same 216 dense truncation points, v3.0e as the
 	   baseline and this check disabled in the middle row:
@@ -153,7 +166,12 @@ class aricoder
 	   (kills truncation by construction, as packPNG demonstrated) or a
 	   checksum (the only thing that catches full-length corruption). Both
 	   are format changes.                                                  */
-	bool exhausted( void ) const { return past_eof_bits > 64; }
+	/* One definition, used in exactly one place (read_bit). There used to be
+	   an exhausted() accessor here as well, left over from an earlier shape
+	   of this check; nothing called it any more and it still carried the old
+	   value, so the file briefly held two thresholds that were supposed to
+	   agree and did not. */
+	static const int MAX_FABRICATED_BITS = 48;
 
 	/* Latched once the decode is known to be running on data that is not a
 	   valid stream: by exhaustion above, or by the model reporting an escape
