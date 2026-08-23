@@ -131,6 +131,20 @@ extern "C" { int _dowildcard = -1; }
 #define MSG_SIZE	512
 #define BARLEN		36
 
+/* Capacity of the ancillary-data scratch buffers. Three of them are this size
+   -- pad_and_aux on each of the encode and decode paths, and pred inside
+   pmp_predict_lame_anc -- and all three are filled from a bit count computed as
+   ((main_size + aux_size) * 8) - bitp, whose inputs come out of the file. The
+   size used to be a bare 2048 repeated at each calloc, with the original author
+   marking one of them "!!! (length)". Named here so the buffers and the bound
+   that protects them cannot drift apart.
+
+   MAX_BITS stops one byte short of the buffer so that the nbytes-th element,
+   which pmp_predict_lame_anc reads as the partial trailing byte, is still
+   inside the allocation. */
+#define LAME_ANC_BUF_SIZE	2048
+#define LAME_ANC_MAX_BITS	( ( LAME_ANC_BUF_SIZE - 1 ) * 8 )
+
 // special realloc with guaranteed free() of previous memory
 static inline void* frealloc( void* ptr, size_t size ) {
 	void* n_ptr = realloc( ptr, (size) ? size : 1 );
@@ -6354,7 +6368,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	// -> encode using main size prediction as context
 	
 	// context / storage
-	static thread_local unsigned char* pad_and_aux= ( unsigned char* ) calloc( 2048, 1 ); // !!! (length)
+	static thread_local unsigned char* pad_and_aux= ( unsigned char* ) calloc( LAME_ANC_BUF_SIZE, 1 );
 	mp3Frame* frame;
 	granuleInfo* granule;
 	unsigned char* scf_c[2];
@@ -6939,6 +6953,16 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 		}
 		// # of padding and aux data bits
 		n = ( ( frame->main_size + frame->aux_size ) * 8 ) - bitp;
+		/* Same bound as the decode side, and reachable the same way: this is
+		   the COMPRESS path, so main_size and aux_size come from parsing an
+		   arbitrary .mp3 handed to us rather than from an archive. Anyone who
+		   compresses an untrusted file reaches this loop. */
+		if ( ( n < 0 ) || ( n > LAME_ANC_MAX_BITS ) ) {
+			snprintf( errormessage, MSG_SIZE, "corrupt mp3: ancillary size %i in frame #%i",
+				n, frame->n );
+			errorlevel = 2;
+			return false;
+		}
 		// locally store padding and aux data
 		for ( pna_c = pad_and_aux, i = n; i >= 8; i -= 8 )
 			*(pna_c++) = huffman->read_bits( 8 );
@@ -7034,7 +7058,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 INTERN inline bool pmp_decode_main_data( aricoder* dec )
 {
 	// context / storage
-	static thread_local unsigned char* pad_and_aux= ( unsigned char* ) calloc( 2048, 1 );
+	static thread_local unsigned char* pad_and_aux= ( unsigned char* ) calloc( LAME_ANC_BUF_SIZE, 1 );
 	mp3Frame* frame;
 	granuleInfo* granule;
 	unsigned char* scf_c[2];
@@ -7632,6 +7656,23 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 		}
 		// # of padding and aux data bits
 		n = ( ( frame->main_size + frame->aux_size ) * 8 ) - bitp;
+		/* main_size and aux_size come out of the archive, so n does too, and
+		   every branch below fills a LAME_ANC_BUF_SIZE buffer with n bits
+		   without checking: pad_and_aux here, and pred inside
+		   pmp_predict_lame_anc. Those are heap-buffer-overflow WRITES, not
+		   reads -- found with ASAN at packmp3.cpp:7913 on a 3-bit corruption
+		   of a valid archive, and reproducing identically in the release
+		   build. Rejected rather than clamped, for the reason the family
+		   converged on this week: a clamped n would keep decoding from a
+		   truncated prediction and hand back a wrong MP3 with exit 0, which
+		   is worse than the crash it replaces. A frame needing more than
+		   ~16 kbit of ancillary data cannot occur in a valid stream. */
+		if ( ( n < 0 ) || ( n > LAME_ANC_MAX_BITS ) ) {
+			snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (ancillary size %i in frame #%i)",
+				n, frame->n );
+			errorlevel = 2;
+			return false;
+		}
 		// check if data can be predicted 100%
 		if ( decode_ari( dec, mod_pap ) == 1 ) {
 			// prediction matches !
@@ -7878,7 +7919,7 @@ INTERN inline bool pmp_build_context( void )
 	----------------------------------------------- */
 INTERN inline unsigned char* pmp_predict_lame_anc( int nbits, unsigned char* ref )
 {
-	static thread_local unsigned char* pred = (unsigned char*) calloc( 2048, sizeof( char ) );
+	static thread_local unsigned char* pred = (unsigned char*) calloc( LAME_ANC_BUF_SIZE, sizeof( char ) );
 	static thread_local unsigned char* lame_str = (unsigned char*) calloc( 4 + 16, sizeof( char ) ); // !!!
 	const unsigned char b01 = 0x55;
 	const unsigned char b10 = 0xAA;
