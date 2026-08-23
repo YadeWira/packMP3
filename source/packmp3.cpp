@@ -146,6 +146,32 @@ extern "C" { int _dowildcard = -1; }
 #define LAME_ANC_BUF_SIZE	2048
 #define LAME_ANC_MAX_BITS	( ( LAME_ANC_BUF_SIZE - 1 ) * 8 )
 
+/* Coefficient walk. The granule buffers are allocated at COEF_BUF_SIZE and
+   indexed through a pointer offset by one, so a bound of COEF_MAX_POS leaves
+   room for the abs[p+1] read in the big-values loop and for the memset that
+   clears up to COEF_SLOTS. Named because a corrupt sv_bound of -524 turned
+   that memset into a 1102-byte write 524 bytes before the buffer. */
+#define COEF_SLOTS		578
+#define COEF_BUF_SIZE	( COEF_SLOTS + 1 + 1 )
+#define COEF_MAX_POS	576
+
+/* Pin the RELATIONSHIPS, not the spellings. Each of these bounds is only
+   correct relative to a buffer size declared elsewhere, and the two are free
+   to drift apart in an edit that looks local and safe. Asserting the property
+   means any rewrite that keeps the guarantee still compiles, and the natural
+   off-by-one -- sizing the limit to the whole buffer instead of one short of
+   it -- does not. Suggested by @LPJPG, who pointed out that pinning a type
+   only works when the guarantee lives in a type; here it lives in arithmetic
+   between two constants. */
+static_assert( LAME_ANC_MAX_BITS / 8 < LAME_ANC_BUF_SIZE,
+	"ancillary bit bound must leave the trailing partial byte inside the buffer" );
+static_assert( LAME_ANC_MAX_BITS > 0,
+	"ancillary bit bound must be positive" );
+static_assert( COEF_MAX_POS + 1 < COEF_SLOTS,
+	"coefficient bound must leave room for the abs[p+1] read" );
+static_assert( 1 + COEF_SLOTS <= COEF_BUF_SIZE,
+	"the +1 pointer offset plus the memset span must fit the allocation" );
+
 // special realloc with guaranteed free() of previous memory
 static inline void* frealloc( void* ptr, size_t size ) {
 	void* n_ptr = realloc( ptr, (size) ? size : 1 );
@@ -6525,16 +6551,16 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 		scf_c[ch]       = ( unsigned char* ) calloc(  40, sizeof( char ) ); // 40: LSF short needs up to 36
 		scf_l_long[ch]  = ( unsigned char* ) calloc(  40, sizeof( char ) );
 		scf_l_short[ch] = ( unsigned char* ) calloc(  40, sizeof( char ) );
-		abs_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		sgn_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		len_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
+		abs_c[ch]       = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		sgn_c[ch]       = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		len_c[ch]       = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
 		lbt_c[ch]      = ( unsigned short* ) calloc( 576, sizeof( short ) );
-		absl_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		abss_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		sgnl_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		sgns_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		lenl_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		lens_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
+		absl_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		abss_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		sgnl_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		sgns_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		lenl_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		lens_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
 		// check for problems
 		if ( ( scf_c[ch] == NULL ) || ( scf_l_long[ch] == NULL ) || ( scf_l_short[ch] == NULL ) ||
 			 ( abs_c[ch] == NULL ) || ( absl_ctx_h[ch] == NULL ) || ( abss_ctx_h[ch] == NULL ) ||
@@ -6826,7 +6852,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 				
 				// --- COEFFICIENTS FINISHED: UPDATE CONTEXT ---
 				p = granule->sv_bound;
-				if ( p < 578 ) memset( abs + p, 0, 578 - p );
+				if ( p < COEF_SLOTS ) memset( abs + p, 0, COEF_SLOTS - p );
 				// loop invariant condition
 				if ( !j_coding || ( ch == 0 ) ) { // !!!
 					// channel 0 context
@@ -7215,16 +7241,16 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 		scf_c[ch]       = ( unsigned char* ) calloc(  40, sizeof( char ) ); // 40: LSF short needs up to 36
 		scf_l_long[ch]  = ( unsigned char* ) calloc(  40, sizeof( char ) );
 		scf_l_short[ch] = ( unsigned char* ) calloc(  40, sizeof( char ) );
-		abs_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		sgn_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		len_c[ch]       = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
+		abs_c[ch]       = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		sgn_c[ch]       = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		len_c[ch]       = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
 		lbt_c[ch]      = ( unsigned short* ) calloc( 576, sizeof( short ) );
-		absl_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		abss_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		sgnl_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		sgns_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		lenl_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
-		lens_ctx_h[ch]  = ( unsigned char* ) calloc( 578+1+1, sizeof( char ) );
+		absl_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		abss_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		sgnl_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		sgns_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		lenl_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
+		lens_ctx_h[ch]  = ( unsigned char* ) calloc( COEF_BUF_SIZE, sizeof( char ) );
 		// check for problems
 		if ( ( scf_c[ch] == NULL ) || ( scf_l_long[ch] == NULL ) || ( scf_l_short[ch] == NULL ) ||
 			 ( abs_c[ch] == NULL ) || ( absl_ctx_h[ch] == NULL ) || ( abss_ctx_h[ch] == NULL ) ||
@@ -7487,14 +7513,14 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 				   Rejected, not clamped: a coefficient walk outside the granule
 				   is not a recoverable state, and a clamped bound would emit a
 				   silently different MP3. */
-				if ( ( granule->sv_bound < 0 ) || ( granule->sv_bound > 576 ) ) {
+				if ( ( granule->sv_bound < 0 ) || ( granule->sv_bound > COEF_MAX_POS ) ) {
 					snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (sv_bound %i in frame #%i)",
 						granule->sv_bound, frame->n );
 					errorlevel = 2;
 					return false;
 				}
 				for ( r = 0; r < 3; r++ ) {
-					if ( ( region_bounds[ r ] < 0 ) || ( region_bounds[ r ] > 576 ) ) {
+					if ( ( region_bounds[ r ] < 0 ) || ( region_bounds[ r ] > COEF_MAX_POS ) ) {
 						snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (region bound %i in frame #%i)",
 							region_bounds[ r ], frame->n );
 						errorlevel = 2;
@@ -7557,7 +7583,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 				}
 				
 				// --- COEFFICIENTS FINISHED: UPDATE CONTEXT ---
-				if ( p < 578 ) memset( abs + p, 0, 578 - p );
+				if ( p < COEF_SLOTS ) memset( abs + p, 0, COEF_SLOTS - p );
 				// loop invariant condition
 				if ( !j_coding || ( ch == 0 ) ) {
 					// channel 0 context
