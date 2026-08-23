@@ -544,17 +544,28 @@ Copyright 2010...2026 by Yade Bravo & Matthias Stirner.
   coefficients outside their own Huffman table's declared maximum, and a
   statistical model that was never allocated.
 
-  **What this does not do is detect more corruption.** Measured with each
-  check disabled in turn: the number of damaged archives that still decode
-  to a wrong file is the same with them and without them. What changes is
-  how the rest fail. Over 216 truncation points, crashes and hangs go to
-  zero; over 200 single-bit corruptions of a full-length archive, 38
-  crashes become clean rejections. Silently-wrong output drops from about
-  4-in-100 to 1-in-216 and does not reach zero — and provably cannot,
-  because a truncated archive can be a valid encoding of a *different*
-  file. Where that happens there is nothing in the data to detect. Closing
-  it needs information this format does not carry, either a declared
-  payload length or a checksum, and that is a format change.
+  The four checks do different things, and lumping them together is
+  misleading either way. Measured by disabling each in turn over the same
+  216 truncation points, against v3.0e as the baseline:
+
+  | | crashes | wrong file, no error | clean error |
+  |---|---|---|---|
+  | v3.0e | 32 | 170 | 14 |
+  | without the exhaustion check | 0 | 166 | 50 |
+  | v3.0f | 0 | **1** | 215 |
+
+  So the exhaustion check is the one that detects truncation — it turns 166
+  wrong files into refusals. The other three change how a decode *fails*,
+  not whether it is caught: they convert crashes into clean errors, both
+  here and on full-length single-bit corruption, where 38 crashes become
+  refusals and the number of wrong files is unchanged.
+
+  It does not reach zero and provably cannot, because a truncated archive
+  can be a valid encoding of a *different* file — where that happens there
+  is nothing in the data to detect. Full-length corruption is the harder
+  case: exhaustion never triggers there, so the wrong-file count is barely
+  affected. Closing either needs information this format does not carry, a
+  declared payload length or a checksum, and that is a format change.
 
   `list` now states what it verified: `header only` for the plain and
   Layer I/II containers, which after an 11-byte prefix are a single
