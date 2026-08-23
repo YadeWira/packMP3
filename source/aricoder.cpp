@@ -524,6 +524,30 @@ int model_s::convert_int_to_symbol( int c, symbol *s )
 
 	table_s* context;
 
+	/* c indexes context->counts[] directly, and the fast path below checks
+	   only c >= 0. Nothing bounds it from above. In release that is safe by
+	   derivation rather than by check: the widest symbol reaching here is
+	   BITLEN8192P(read_bits(linbits)), and linbits maxes at 13 across all 32
+	   rows of bv_dec_table, so the lookup index caps at 8191 against a table
+	   of 8224 and the resulting symbol fits every model's alphabet.
+
+	   That is one bound with two consumers, not defence in depth, and the
+	   blast radius if it ever broke is measured rather than assumed: forcing
+	   a single out-of-alphabet symbol gives a heap-buffer-overflow right
+	   here, at counts[c], with no intervening check. So the invariant is
+	   asserted under the fuzz flag, where a future change that widens
+	   linbits or adds a caller with a computed symbol shows up as a loud
+	   abort instead of silent corruption. Off in release: this runs once per
+	   coded symbol. */
+	#ifdef PMP3_CHECK_BITLEN
+	if ( ( c < 0 ) || ( c >= max_symbol ) ) {
+		fflush( stdout );
+		fprintf( stderr, "\nPMP3_CHECK_BITLEN: symbol %i outside model alphabet [0..%i]\n",
+			c, max_symbol - 1 );
+		fflush( stderr );
+		abort();
+	}
+	#endif
 
 	context = contexts[ current_order ];
 	ensure_context_ready( context );
