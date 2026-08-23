@@ -94,16 +94,33 @@ class aricoder
 	     truncations that would otherwise
 	     write a wrong file, minimum        120 bits
 
-	   That margin does NOT hold. Denser sampling -- 60 truncation depths per
-	   file instead of ten -- found a case that fabricates 32 bits, which is
-	   inside the valid range. The two populations do not merely touch, they
-	   OVERLAP, so no threshold can separate them: any value low enough to
-	   catch that case rejects valid archives.
+	   That margin does NOT hold as a separation. Denser sampling -- 60
+	   truncation depths per file instead of ten -- found a case that
+	   fabricates 32 bits, inside the valid range. The populations do not
+	   merely touch, they OVERLAP: no threshold catches that case without
+	   also rejecting valid archives.
 
-	   Keep this check anyway, and know what it is. It is a mitigation, not a
-	   guarantee. Measured over 216 dense truncation points: crashes and
-	   hangs go to zero and silently-wrong output drops from about 4-in-100
-	   to 1-in-216, but it does not reach zero and provably cannot.
+	   Which matters far less than it sounds, and the reason is worth
+	   stating because both this project and packJPG got it backwards first.
+	   A corruption guard is not symmetric. A false positive -- refusing a
+	   good archive -- is unacceptable. A false negative just leaves the
+	   previous behaviour. So the number to protect is the maximum on the
+	   VALID side, 40, and 64 clears it with room while still catching
+	   nearly everything above it. Overlap kills the guarantee, not the
+	   guard.
+
+	   Measured over the same 216 dense truncation points, v3.0e as the
+	   baseline and this check disabled in the middle row:
+
+	                                  crashes   wrong file   clean error
+	     v3.0e                           32        170           14
+	     this check disabled              0        166           50
+	     this check enabled               0          1          215
+
+	   So it converts 166 wrong files into refusals. It is a mitigation and
+	   not a guarantee -- one case still slips -- but it is the check doing
+	   the detecting; the other three guards convert crashes into clean
+	   errors without changing what is caught.
 
 	   The reason is not a weakness in the threshold. A truncated archive can
 	   be a perfectly valid encoding of a DIFFERENT file -- packJPG confirmed
