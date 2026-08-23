@@ -243,16 +243,16 @@ sweep() { # $1 binary $2 label
 	local bin=$1 label=$2 f b arch ref full k pct seed verdict rc carch cback
 	g_crash=0; g_hang=0; g_wrong=0; g_cells=0
 	g_r1=0; g_r2=0; g_r3=0; g_r4=0; g_r6=0; g_unreadable=0; g_refused=0; g_rt_ok=0; g_r6_sig=0; g_r6_wrong=0
-	g_slow=0; g_slow_out=0; g_maxms=0; g_minms=-1; g_fast_out=0; g_canary=""; g_books=""
+	g_slow=0; g_slow_out=0; g_maxms=0; g_minms=-1; g_fast_out=0; g_canary=""; g_books=""; g_skipped=0
 	for f in $SOURCES; do
 		b=$( basename "$f" )
 		rm -rf "$WORK/a"; mkdir -p "$WORK/a"
 		"$bin" a -o -np -od"$WORK/a" "$f" >/dev/null 2>&1
 		arch=$( ls "$WORK/a"/*.pm3 2>/dev/null | head -1 )
-		[ -n "$arch" ] || continue
+		[ -n "$arch" ] || { g_skipped=$(( g_skipped + 1 )); continue; }
 		ref=$( sha256sum "$f" | cut -d' ' -f1 )
 		full=$( stat -c%s "$arch" )
-		[ "$full" -gt 200 ] || continue
+		[ "$full" -gt 200 ] || { g_skipped=$(( g_skipped + 1 )); continue; }
 
 		# CANARY: the UNDAMAGED archive, run through the same path as every
 		# damaged one and required to come back identical. Not a test of the
@@ -312,12 +312,12 @@ sweep() { # $1 binary $2 label
 	ref=$( sha256sum "$1" | cut -d' ' -f1 )
 	if [ -n "$arch" ]; then
 		for seed in $( seq 1 $FLIP_SEEDS ); do
-			flip_file "$arch" "$WORK/d.pm3" "$seed" 1 || continue
+			flip_file "$arch" "$WORK/d.pm3" "$seed" 1 || { g_skipped=$(( g_skipped + 1 )); continue; }
 			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r3=$(( g_r3 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
 			note_time "$verdict"
-			flip_file "$arch" "$WORK/d.pm3" $(( seed + 100000 )) 3 || continue
+			flip_file "$arch" "$WORK/d.pm3" $(( seed + 100000 )) 3 || { g_skipped=$(( g_skipped + 1 )); continue; }
 			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r4=$(( g_r4 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
@@ -335,8 +335,8 @@ sweep() { # $1 binary $2 label
 	# side.
 	set -- $SOURCES
 	for seed in $( seq 1 $INPUT_SEEDS ); do
-		python3 "$WORK/mflip.py" "$1" "$WORK/c.mp3" "$seed" 12 2>/dev/null || continue
-		[ -s "$WORK/c.mp3" ] || continue
+		python3 "$WORK/mflip.py" "$1" "$WORK/c.mp3" "$seed" 12 2>/dev/null || { g_skipped=$(( g_skipped + 1 )); continue; }
+		[ -s "$WORK/c.mp3" ] || { g_skipped=$(( g_skipped + 1 )); continue; }
 		rm -rf "$WORK/ci"; mkdir -p "$WORK/ci/back"
 		g_cells=$(( g_cells + 1 )); g_r6=$(( g_r6 + 1 ))
 		timeout "$TIMEOUT" "$bin" a -o -np -od"$WORK/ci" "$WORK/c.mp3" >/dev/null 2>&1
@@ -382,6 +382,16 @@ sweep() { # $1 binary $2 label
 		"" "$g_r1" "$g_r2" "$g_r3" "$g_r4"
 	printf "  %-22s input side: %d cells = %d refused + %d round-trip ok + %d unreadable + %d wrong + %d signalled\n" \
 		"" "$g_r6" "$g_refused" "$g_rt_ok" "$g_unreadable" "$g_r6_wrong" "$g_r6_sig"
+	# SECOND INVARIANT: cells that vanish from the DENOMINATOR rather than
+	# landing in the wrong bucket. Every skip above -- a source that will not
+	# compress, a generator that fails -- used to `continue` before the cell
+	# was counted, so the cell left the table entirely and the denominator
+	# shrank on its own. A rate over a silently smaller denominator is the
+	# same failure one step further out: not a class absorbed by its
+	# neighbour, a class that walks off the table. @PJPG named it and checked
+	# their own sweeps by hand; this makes it impossible to miss instead.
+	[ "$g_skipped" -gt 0 ] && g_books="$g_books  $g_skipped cell(s) skipped before being counted"
+
 	# ACCOUNTING. Every cell must land in exactly one bucket, and the buckets
 	# must sum to the cell count. This is the mechanism for the thing that bit
 	# me an hour ago: a class that did not exist when the classifier was
@@ -394,6 +404,7 @@ sweep() { # $1 binary $2 label
 	g_acct=$(( g_refused + g_rt_ok + g_unreadable + g_r6_wrong + g_r6_sig ))
 	[ "$g_acct" -eq "$g_r6" ] || g_books=" input-side: $g_r6 cells but $g_acct accounted for"
 	[ -n "$g_canary" ] && printf "  %-22s CANARY FAILED:%s\n" "" "$g_canary"
+	[ "$g_skipped" -gt 0 ] && printf "  %-22s SKIPPED before counting: %d\n" "" "$g_skipped"
 	printf "  %-22s timing: baseline=%dms  slow>%dms: %d (with output %d)  fast<%dms with output: %d  [%d..%dms]\n" \
 		"" "$BASE_MS" "$SLOW_MS" "$g_slow" "$g_slow_out" "$FAST_MS" "$g_fast_out" "$g_minms" "$g_maxms"
 	# An empty regime is a broken harness reporting a clean pass. This is not
