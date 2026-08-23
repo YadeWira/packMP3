@@ -172,7 +172,7 @@ $(TARGET): $(CLIOBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb test fuzzbuild
+.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb test fuzzbuild corrupt corrupt-control
 
 # Regression suite: reversibility AND proof that each codec actually ran.
 # Generates its own corpus on first use. See tests/regression.sh for why the
@@ -180,6 +180,20 @@ $(TARGET): $(CLIOBJ) $(RES)
 test: $(TARGET)
 	@bash ../tests/make_testdata.sh >/dev/null
 	@bash ../tests/regression.sh
+	@bash ../tests/corruption.sh
+
+# Corruption suite on its own, and its own control. `make corrupt-control`
+# runs the current binary AND an older one, and fails if the older does not
+# look worse -- a suite that cannot tell a fixed build from a broken one is
+# not measuring anything. Point it at any pre-3.0g binary:
+#   make corrupt-control CONTROL=/path/to/old/packMP3
+corrupt: $(TARGET)
+	@bash ../tests/make_testdata.sh >/dev/null
+	@bash ../tests/corruption.sh
+
+corrupt-control: $(TARGET)
+	@bash ../tests/make_testdata.sh >/dev/null
+	@PMP3_CORRUPT_CONTROL=$(CONTROL) bash ../tests/corruption.sh
 
 all: $(TARGET)
 
