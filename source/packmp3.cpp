@@ -28,6 +28,7 @@
 #endif
 
 #include "pmp3tbl.h"
+#include <type_traits>
 #include "pmp3bitlen.h"
 #include "bitops.h"
 #include "aricoder.h"
@@ -7521,7 +7522,18 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 						   that indexed the same table -- but a corrupt one can, and
 						   the measured crash for most truncations lands exactly
 						   here, inside huffman_writer::encode_pair. This is the
-						   format's own bound, not an invented one. */
+						   format's own bound, not an invented one.
+
+						   Deliberately one-sided, and only safe because abs[] is
+						   unsigned char: a negative index would walk BACKWARDS out
+						   of the table, which is how the sv_bound overflow above
+						   did its damage. The type is what rules that out, not the
+						   test, so it is pinned rather than left to a comment --
+						   changing abs[] to a signed type would silently reopen
+						   the gap this check appears to close. */
+						static_assert( std::is_unsigned< std::remove_reference<
+							decltype( abs[ 0 ] ) >::type >::value,
+							"abs[] must stay unsigned: the bound below checks only the upper side" );
 						if ( abs[ p ] > bv_table->max || abs[ p + 1 ] > bv_table->max ) {
 							snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (coefficients)" );
 							errorlevel = 2;
