@@ -128,10 +128,19 @@ extern "C" { int _dowildcard = -1; }
    opposite of what every bound added in this file does. That is deliberate and
    measured, not an oversight:
 
-   The five uses all cap (big_val_pairs << 1) at 576. Instrumented to log every
-   time the clamp actually changes a value, it fires ZERO times over 54 valid
-   files (compress and decompress) and ZERO times over 432 corrupted cells --
-   byte cuts, percentage cuts, and one- and three-bit flips on two sources.
+   The five uses all cap (big_val_pairs << 1) at 576. Instrumented to count
+   both evaluations and actual changes:
+
+     0 of 30688 evaluations over 20 valid files (compress and decompress)
+     0 firings over 432 corrupted cells -- byte cuts, percentage cuts, and
+       one- and three-bit flips on two sources
+
+   The denominator is the point and is given rather than a percentage. A site
+   that never fires because it is never reached, and one that is evaluated
+   thirty thousand times and never needs to act, both report 0% and mean
+   opposite things -- @PJPG hit exactly that in their own tree, reading an
+   encode-path clamp as dead when their run had only exercised decode. Here
+   the clamp is on the hot path and simply never has anything to do.
 
    So it is neither of the two things a clamp usually is. It is not arithmetic
    on a value that legitimately exceeds the range, because valid files never
