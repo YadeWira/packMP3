@@ -141,14 +141,32 @@ extern "C" { int _dowildcard = -1; }
    suite moves. A change that buys nothing measurable and costs nothing
    measurable is not an improvement, it is a preference, so the clamp stays.
 
-   Recorded so the next person does not repeat the experiment. If a corruption
-   regime is ever found that DOES reach it, the answer flips: a clamped bound
-   there would yield a legal-looking region built from a value the file never
-   contained, which is the silent-corruption shape this file rejects everywhere
-   else. The distinction is @LPJPG's: clamp when the out-of-range value is a
-   legitimate intermediate, reject when it is proof of corruption. Here it is
-   neither, because it does not happen. */
+   And it does not happen for a reason, not by luck. @PJPG pointed out that
+   their equivalent clamp has no derivable bound because it depends on QUANT,
+   which comes from the file; this one does, and the chain is exact:
+
+     mod_bv alphabet is (576/2)+1        -> big_val_pairs in [0, 288]
+     big_val_pairs << 1                  -> [0, 576]
+     mp3_bandwidth_conv rows are 576+1   -> valid index 0..576
+
+   The model alphabet bounds the value before the clamp ever sees it, and the
+   table is dimensioned to exactly that range, which is why the same expression
+   indexes bw_conv[] two lines earlier with no check and no overflow. So the
+   clamp is unreachable by construction, and the measurement above is a
+   confirmation of the derivation rather than the argument for it.
+
+   The relationship is pinned below, since every link is a compile-time
+   constant here. If someone widens the alphabet without widening the table,
+   or vice versa, the bare bw_conv[] index goes out of range and the clamp
+   stops being unreachable in the same edit. The distinction is @LPJPG's:
+   clamp when the out-of-range value is a legitimate intermediate, reject when
+   it is proof of corruption. Here it is neither, because it cannot arise. */
 #define CLAMPED(l,h,v)	( ( v < l ) ? l : ( v > h ) ? h : v )
+
+static_assert( ( ( ( 576 / 2 ) + 1 ) - 1 ) * 2 ==
+	(int)( sizeof( mp3_bandwidth_conv[0] ) / sizeof( mp3_bandwidth_conv[0][0] ) ) - 1,
+	"mod_bv's alphabet and the bandwidth_conv row length must stay in step: "
+	"the largest symbol, doubled, is used directly as an index into it" );
 
 #define MEM_ERRMSG	"out of memory error"
 #define FRD_ERRMSG	"could not read file / file not found: %s"
