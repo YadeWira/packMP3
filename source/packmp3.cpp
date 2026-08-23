@@ -7475,10 +7475,36 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 				}
 				
 				
+				/* region_bounds[] and sv_bound come out of the archive and are
+				   assigned straight into p, which then indexes abs[]/sgn[] and
+				   finally sizes a memset. A corrupt stream drove p to -524,
+				   turning `memset( abs + p, 0, 578 - p )` into a 1102-byte write
+				   starting 524 bytes BEFORE a 580-byte buffer -- found under ASAN
+				   on a SINGLE bit flip, and not covered by the ancillary bound
+				   added earlier. Checked at the source rather than before the
+				   memset, so the loops below cannot index out of range either.
+				   Rejected, not clamped: a coefficient walk outside the granule
+				   is not a recoverable state, and a clamped bound would emit a
+				   silently different MP3. */
+				if ( ( granule->sv_bound < 0 ) || ( granule->sv_bound > 576 ) ) {
+					snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (sv_bound %i in frame #%i)",
+						granule->sv_bound, frame->n );
+					errorlevel = 2;
+					return false;
+				}
+				for ( r = 0; r < 3; r++ ) {
+					if ( ( region_bounds[ r ] < 0 ) || ( region_bounds[ r ] > 576 ) ) {
+						snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (region bound %i in frame #%i)",
+							region_bounds[ r ], frame->n );
+						errorlevel = 2;
+						return false;
+					}
+				}
+
 				// --- COEFFICIENT ENCODING: BIG VALUES ---
 				for ( p = 0, r = 0; r < 3; r++ ) {
 					if ( region_tables[ r ] == 0 ) { // tbl0 skipping
-						p = region_bounds[ r ];			
+						p = region_bounds[ r ];
 						continue;
 					}
 					// set table and linbits
