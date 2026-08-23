@@ -681,6 +681,22 @@ int iostream::read( void* to, int tpsize, int dtsize )
 
 int iostream::write( void* from, int tpsize, int dtsize )
 {
+	/* An empty write with a NULL source is a normal thing for callers to do --
+	   write_mp3 emits data_before unconditionally, and that pointer is NULL
+	   whenever the file has no leading tag. Passing NULL to fwrite is undefined
+	   even when the count is zero (the parameter is declared never-null), and
+	   memcpy says the same, so every one of those calls was UB on the ordinary
+	   success path. It never misbehaved, but it made UBSan fire on every
+	   decompression of a valid file, which is noise in exactly the tool one
+	   reaches for to find real memory bugs. Answer it here rather than at each
+	   call site, so callers can keep writing the unconditional form.
+
+	   Deliberately keyed on the COUNT, not on the pointer: a NULL source with a
+	   nonzero count is a caller bug, and short-circuiting that would hide it
+	   from the sanitizer instead of fixing it. Only the zero-length case, which
+	   is well-defined in intent and undefined only in spelling, is answered. */
+	if ( ( tpsize <= 0 ) || ( dtsize <= 0 ) ) return 0;
+
 	return ( srct == 0 ) ? write_file( from, tpsize, dtsize ) : write_mem( from, tpsize, dtsize );
 }
 
