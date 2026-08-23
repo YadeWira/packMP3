@@ -1,8 +1,10 @@
 # packMP3 — decisiones pendientes
 
 Estado al 2026-08-23. Todo lo que sigue está medido; nada está aplicado sin
-decisión. `master` está limpio, con **32 commits sobre el tag `v3.0f`**, y
-`make test` pasa las dos suites.
+decisión. `master` está limpio y `make test` pasa las dos suites. Para ver
+qué hay acumulado sobre lo publicado: `git log --oneline v3.0f..HEAD`
+(deliberadamente no hardcodeado acá — un número que hay que actualizar en cada
+commit es un número que va a quedar viejo).
 
 Este archivo existe para que las decisiones no vivan solo en el historial de
 una conversación. Cada punto trae el número que lo sostiene y lo que cuesta.
@@ -11,8 +13,8 @@ una conversación. Cada punto trae el número que lo sostiene y lo que cuesta.
 
 ## 1. Cortar la v3.0g — **decisión pendiente**
 
-Los 32 commits cierran **tres defectos de memoria que están vivos en la
-versión publicada**. Los tres se miden, los tres tienen repro determinista, y
+Lo acumulado cierra **tres defectos de memoria que están vivos en la versión
+publicada**. Los tres se miden, los tres tienen repro determinista, y
 ninguno necesita nada exótico para alcanzarse.
 
 | defecto | cómo se alcanza | commit |
@@ -30,7 +32,7 @@ tocaba— la mejora es grande y está medida sobre 12 archivos, 108 celdas:
 |  | v3.0e (publicado) | HEAD |
 |---|---|---|
 | salidas silenciosamente incorrectas | 99 | **10** |
-| crashes (grilla completa de 496 celdas) | 49 | **0** |
+| crashes (grilla completa) | 49 | **0** |
 
 **Costo de cortarla**: el trabajo de release habitual. No rompe
 compatibilidad — los `.pm3` siguen siendo los mismos bytes y las versiones
@@ -43,7 +45,7 @@ descarga.
 
 ## 2. Checksum o largo declarado en el formato — **decisión pendiente, más grande**
 
-Quedan **14 celdas de 496** que decodifican a un MP3 incorrecto con exit 0 y
+Quedan **14 celdas** que decodifican a un MP3 incorrecto con exit 0 y
 sin ninguna señal. No es que las guardas fallen: son archivos truncados que
 resultan ser una **codificación válida de otro mp3**. Salida del tamaño
 exacto del original, bytes distintos. No hay nada inconsistente que ningún
