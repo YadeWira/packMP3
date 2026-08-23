@@ -83,6 +83,10 @@ TIMEOUT=${PMP3_CORRUPT_TIMEOUT:-60}
 # the axis can be PROVEN to discriminate: at 1 roughly every cell qualifies,
 # which is what a working measurement must show.
 SLOW_FACTOR=${PMP3_CORRUPT_SLOW_FACTOR:-10}
+# Below this fraction of the baseline, a cell that PRODUCED OUTPUT is
+# implausibly fast -- it cannot have decoded anything. Settable so this end
+# can be proven to discriminate too: at 100 every cell qualifies.
+FAST_DIV=${PMP3_CORRUPT_FAST_DIV:-8}
 
 [ -x "$BIN" ] || { echo "no binary at $BIN -- run make first" >&2; exit 1; }
 [ -d "$DATA" ] || bash "$HERE/make_testdata.sh" >/dev/null
@@ -191,6 +195,22 @@ baseline_ms() { # $1 binary
 # completely, since it reads as an ordinary wrong-output row.
 note_time() { # $1 verdict
 	[ "$g_ms" -gt "$g_maxms" ] && g_maxms=$g_ms
+	{ [ "$g_minms" -lt 0 ] || [ "$g_ms" -lt "$g_minms" ]; } && g_minms=$g_ms
+
+	# BOTH ENDS. The first version tracked only the maximum, which is the
+	# one-sided-tracker defect found in a throwaway probe an hour earlier and
+	# then, on looking, sitting in this durable harness too: "slowest" alone
+	# cannot distinguish a healthy run from a binary that returns instantly
+	# without doing the work. Implausibly FAST matters only when the cell also
+	# claims to have produced output -- a rejection returns quickly by design,
+	# a successful decode in 2ms when a healthy one takes 115ms did not decode
+	# anything.
+	case $1 in
+		wrong|ident)
+			[ "$g_ms" -le "$FAST_MS" ] && g_fast_out=$(( g_fast_out + 1 ))
+			;;
+	esac
+
 	[ "$g_ms" -ge "$SLOW_MS" ] || return 0
 	g_slow=$(( g_slow + 1 ))
 	case $1 in wrong|ident) g_slow_out=$(( g_slow_out + 1 ));; esac
@@ -201,7 +221,7 @@ sweep() { # $1 binary $2 label
 	local bin=$1 label=$2 f b arch ref full k pct seed verdict
 	g_crash=0; g_hang=0; g_wrong=0; g_cells=0
 	g_r1=0; g_r2=0; g_r3=0; g_r4=0
-	g_slow=0; g_slow_out=0; g_maxms=0; g_canary=""
+	g_slow=0; g_slow_out=0; g_maxms=0; g_minms=-1; g_fast_out=0; g_canary=""
 	for f in $SOURCES; do
 		b=$( basename "$f" )
 		rm -rf "$WORK/a"; mkdir -p "$WORK/a"
@@ -287,8 +307,8 @@ sweep() { # $1 binary $2 label
 	printf "  %-22s per regime: bytes=%d percent=%d 1-flip=%d 3-flip=%d\n" \
 		"" "$g_r1" "$g_r2" "$g_r3" "$g_r4"
 	[ -n "$g_canary" ] && printf "  %-22s CANARY FAILED:%s\n" "" "$g_canary"
-	printf "  %-22s timing: baseline=%dms threshold=%dms slowest=%dms slow=%d (with output: %d)\n" \
-		"" "$BASE_MS" "$SLOW_MS" "$g_maxms" "$g_slow" "$g_slow_out"
+	printf "  %-22s timing: baseline=%dms  slow>%dms: %d (with output %d)  fast<%dms with output: %d  [%d..%dms]\n" \
+		"" "$BASE_MS" "$SLOW_MS" "$g_slow" "$g_slow_out" "$FAST_MS" "$g_fast_out" "$g_minms" "$g_maxms"
 	# An empty regime is a broken harness reporting a clean pass. This is not
 	# hypothetical: the first version of this script mangled the flip
 	# generator and sailed through both flip regimes without running a case.
@@ -392,10 +412,11 @@ echo "packMP3 corruption suite -- five regimes, declared here rather than chosen
 echo
 BASE_MS=$( baseline_ms "$BIN" )
 SLOW_MS=$(( BASE_MS * SLOW_FACTOR ))
+FAST_MS=$(( BASE_MS / FAST_DIV ))
 [ "$SLOW_MS" -gt 0 ] || SLOW_MS=1
 sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
-new_slow=$g_slow; new_canary=$g_canary
+new_slow=$g_slow; new_canary=$g_canary; new_fast=$g_fast_out
 guards "$BIN"
 if [ -z "$g_missing" ]; then
 	echo "                         every guard fired on its own case (13/13: 11 seeded + 2 crafted headers)"
@@ -438,6 +459,11 @@ if [ -n "$new_canary" ]; then
 	echo "  FAIL: undamaged archive(s) did not round-trip:$new_canary"
 	echo "        The harness is broken, not the codec -- every other number in"
 	echo "        this run is void. Check the binary, the paths, and the hashing."
+	fail=1
+fi
+if [ "$new_fast" -gt 0 ]; then
+	echo "  FAIL: $new_fast cell(s) produced output in under ${FAST_MS}ms (baseline ${BASE_MS}ms)"
+	echo "        A decode that claims success far faster than a healthy one did not decode."
 	fail=1
 fi
 if [ "$new_slow" -gt 0 ]; then
