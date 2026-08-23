@@ -49,6 +49,8 @@
 #                                          the smaller grid and not progress.
 #   PMP3_CORRUPT_CONTROL=<binary> ...      control: run an old build too, and
 #                                          fail if it does NOT look worse
+#   PMP3_CORRUPT_TIMEOUT=0.01 ...          control: prove the hang classifier
+#                                          fires (expect ~109 hangs and a FAIL)
 #
 # Exit 0 only if everything passed.
 set -u
@@ -64,6 +66,17 @@ trap 'rm -rf "$WORK"' EXIT
 QUICK=${PMP3_CORRUPT_QUICK:-0}
 BASELINE=${PMP3_CORRUPT_BASELINE:-14}
 CONTROL=${PMP3_CORRUPT_CONTROL:-}
+# Per-case timeout. Configurable so the hang classifier can be PROVEN to fire:
+# PMP3_CORRUPT_TIMEOUT=0.01 makes every normal decode overrun and the suite
+# fails with 109 hangs. The value matters -- the first control used 1 second
+# against a decode that takes 95 ms, reported zero hangs, and looked exactly
+# like a broken classifier. A control that cannot produce the condition it is
+# testing for is not a control. A classifier nobody has seen fire is worth what any unproven check
+# is worth -- and the hang class matters precisely because sanitizers are
+# silent on it. @PJPG measured a single header byte that leaves ASAN and UBSan
+# with nothing to say and takes a decode from 431 ms to over 25 seconds; only a
+# timeout sees that.
+TIMEOUT=${PMP3_CORRUPT_TIMEOUT:-60}
 
 [ -x "$BIN" ] || { echo "no binary at $BIN -- run make first" >&2; exit 1; }
 [ -d "$DATA" ] || bash "$HERE/make_testdata.sh" >/dev/null
@@ -117,7 +130,7 @@ classify() { # $1 binary $2 damaged archive $3 sha of the original mp3
 	rm -rf "$WORK/out"; mkdir -p "$WORK/out"
 	# BOTH streams captured: msgout is stdout by default, and a harness that
 	# greps only stderr sees every rejection as silence.
-	timeout 60 "$bin" x -o -np -od"$WORK/out" "$arch" >/dev/null 2>&1
+	timeout "$TIMEOUT" "$bin" x -o -np -od"$WORK/out" "$arch" >/dev/null 2>&1
 	rc=$?
 	[ $rc -ge 128 ] && { echo crash; return; }
 	[ $rc -eq 124 ] && { echo hang; return; }
