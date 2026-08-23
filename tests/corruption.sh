@@ -51,6 +51,8 @@
 #                                          fail if it does NOT look worse
 #   PMP3_CORRUPT_TIMEOUT=0.01 ...          control: prove the hang classifier
 #                                          fires (expect ~109 hangs and a FAIL)
+#   PMP3_CORRUPT_SLOW_FACTOR=1 ...         control: prove the timing axis
+#                                          discriminates (expect ~34 slow cells)
 #
 # Exit 0 only if everything passed.
 set -u
@@ -77,6 +79,10 @@ CONTROL=${PMP3_CORRUPT_CONTROL:-}
 # with nothing to say and takes a decode from 431 ms to over 25 seconds; only a
 # timeout sees that.
 TIMEOUT=${PMP3_CORRUPT_TIMEOUT:-60}
+# A cell is "slow" at this multiple of the median healthy decode. Settable so
+# the axis can be PROVEN to discriminate: at 1 roughly every cell qualifies,
+# which is what a working measurement must show.
+SLOW_FACTOR=${PMP3_CORRUPT_SLOW_FACTOR:-10}
 
 [ -x "$BIN" ] || { echo "no binary at $BIN -- run make first" >&2; exit 1; }
 [ -d "$DATA" ] || bash "$HERE/make_testdata.sh" >/dev/null
@@ -125,22 +131,69 @@ flip_file() { # $1 archive $2 out $3 seed $4 nflips
 }
 
 # Classify one damaged archive. Echoes: crash | hang | reject | wrong | ident
+#
+# Also records the elapsed time in g_ms, because the verdict alone is a binary
+# read of a continuous variable. A cell that takes thirty seconds and produces
+# output is classified identically to one that takes ninety milliseconds and
+# produces output -- and whether the slow one shows up as a hang at all is
+# decided by where the timeout happens to sit, not by anything about the input.
+# @PJPG measured a case at 25.7 s against a 431 ms baseline that produced
+# output and would have been one more "wrong" row at a 30 s timeout. Their
+# whole 7920-cell grid could not have found it: not because the cells miss it,
+# but because the instrument had no such axis.
 classify() { # $1 binary $2 damaged archive $3 sha of the original mp3
-	local bin=$1 arch=$2 ref=$3 out rc
+	local bin=$1 arch=$2 ref=$3 out rc t0 t1 g_ms
 	rm -rf "$WORK/out"; mkdir -p "$WORK/out"
+	t0=$( date +%s%N )
 	# BOTH streams captured: msgout is stdout by default, and a harness that
 	# greps only stderr sees every rejection as silence.
 	timeout "$TIMEOUT" "$bin" x -o -np -od"$WORK/out" "$arch" >/dev/null 2>&1
 	rc=$?
-	[ $rc -ge 128 ] && { echo crash; return; }
-	[ $rc -eq 124 ] && { echo hang; return; }
+	t1=$( date +%s%N )
+	g_ms=$(( ( t1 - t0 ) / 1000000 ))
+	# Verdict AND duration on one line: classify runs inside $( ), which is a
+	# subshell, so anything it assigns to a global is lost. The first version
+	# set g_ms and every timing number came out zero -- a whole axis reading as
+	# "nothing is ever slow" because of the shell, not the code under test.
+	[ $rc -ge 128 ] && { echo "crash $g_ms"; return; }
+	[ $rc -eq 124 ] && { echo "hang $g_ms"; return; }
 	out=$( ls "$WORK/out" 2>/dev/null | head -1 )
-	[ -n "$out" ] && [ -s "$WORK/out/$out" ] || { echo reject; return; }
+	[ -n "$out" ] && [ -s "$WORK/out/$out" ] || { echo "reject $g_ms"; return; }
 	if [ "$( sha256sum "$WORK/out/$out" | cut -d' ' -f1 )" = "$ref" ]; then
-		echo ident
+		echo "ident $g_ms"
 	else
-		echo wrong
+		echo "wrong $g_ms"
 	fi
+}
+
+# Median duration of a healthy decode, so slowness is measured against this
+# build on this machine rather than a hardcoded number.
+baseline_ms() { # $1 binary
+	local bin=$1 f arch t0 t1 n=0
+	: > "$WORK/base.txt"
+	rm -rf "$WORK/ba"; mkdir -p "$WORK/ba/out"
+	for f in $SOURCES; do
+		"$bin" a -o -np -od"$WORK/ba" "$f" >/dev/null 2>&1
+		arch=$( ls "$WORK/ba"/*.pm3 2>/dev/null | head -1 ); [ -n "$arch" ] || continue
+		rm -rf "$WORK/ba/out"; mkdir -p "$WORK/ba/out"
+		t0=$( date +%s%N )
+		timeout "$TIMEOUT" "$bin" x -o -np -od"$WORK/ba/out" "$arch" >/dev/null 2>&1
+		t1=$( date +%s%N )
+		echo $(( ( t1 - t0 ) / 1000000 )) >> "$WORK/base.txt"
+		rm -f "$WORK/ba"/*.pm3; n=$(( n + 1 ))
+	done
+	[ "$n" -gt 0 ] || { echo 100; return; }
+	sort -n "$WORK/base.txt" | awk '{a[NR]=$1} END{ print (NR%2) ? a[(NR+1)/2] : int((a[NR/2]+a[NR/2+1])/2) }'
+}
+
+# Flag a cell as slow relative to the healthy baseline. Kept separate from the
+# verdict on purpose: "slow AND produced output" is the class the verdict hides
+# completely, since it reads as an ordinary wrong-output row.
+note_time() { # $1 verdict
+	[ "$g_ms" -gt "$g_maxms" ] && g_maxms=$g_ms
+	[ "$g_ms" -ge "$SLOW_MS" ] || return 0
+	g_slow=$(( g_slow + 1 ))
+	case $1 in wrong|ident) g_slow_out=$(( g_slow_out + 1 ));; esac
 }
 
 # Run every regime against one binary. Sets the g_* counters.
@@ -148,6 +201,7 @@ sweep() { # $1 binary $2 label
 	local bin=$1 label=$2 f b arch ref full k pct seed verdict
 	g_crash=0; g_hang=0; g_wrong=0; g_cells=0
 	g_r1=0; g_r2=0; g_r3=0; g_r4=0
+	g_slow=0; g_slow_out=0; g_maxms=0
 	for f in $SOURCES; do
 		b=$( basename "$f" )
 		rm -rf "$WORK/a"; mkdir -p "$WORK/a"
@@ -161,17 +215,19 @@ sweep() { # $1 binary $2 label
 		# REGIME 1: bytes off the end. The one the old sweeps missed.
 		for k in $BYTE_CUTS; do
 			head -c $(( full - k )) "$arch" > "$WORK/d.pm3"
-			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_cells=$(( g_cells + 1 )); g_r1=$(( g_r1 + 1 ))
+			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r1=$(( g_r1 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
+			note_time "$verdict"
 		done
 
 		# REGIME 2: percentage of the file.
 		for pct in $PCT_CUTS; do
 			head -c $(( full * pct / 100 )) "$arch" > "$WORK/d.pm3"
-			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_cells=$(( g_cells + 1 )); g_r2=$(( g_r2 + 1 ))
+			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r2=$(( g_r2 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
+			note_time "$verdict"
 		done
 	done
 
@@ -186,19 +242,23 @@ sweep() { # $1 binary $2 label
 	if [ -n "$arch" ]; then
 		for seed in $( seq 1 $FLIP_SEEDS ); do
 			flip_file "$arch" "$WORK/d.pm3" "$seed" 1 || continue
-			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_cells=$(( g_cells + 1 )); g_r3=$(( g_r3 + 1 ))
+			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r3=$(( g_r3 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
+			note_time "$verdict"
 			flip_file "$arch" "$WORK/d.pm3" $(( seed + 100000 )) 3 || continue
-			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_cells=$(( g_cells + 1 )); g_r4=$(( g_r4 + 1 ))
+			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r4=$(( g_r4 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
+			note_time "$verdict"
 		done
 	fi
 	printf "  %-22s cells=%-5d crash=%-4d hang=%-4d silently-wrong=%d\n" \
 		"$label" "$g_cells" "$g_crash" "$g_hang" "$g_wrong"
 	printf "  %-22s per regime: bytes=%d percent=%d 1-flip=%d 3-flip=%d\n" \
 		"" "$g_r1" "$g_r2" "$g_r3" "$g_r4"
+	printf "  %-22s timing: baseline=%dms threshold=%dms slowest=%dms slow=%d (with output: %d)\n" \
+		"" "$BASE_MS" "$SLOW_MS" "$g_maxms" "$g_slow" "$g_slow_out"
 	# An empty regime is a broken harness reporting a clean pass. This is not
 	# hypothetical: the first version of this script mangled the flip
 	# generator and sailed through both flip regimes without running a case.
@@ -300,8 +360,12 @@ guards() { # $1 binary -- sets g_missing
 
 echo "packMP3 corruption suite -- five regimes, declared here rather than chosen per run"
 echo
+BASE_MS=$( baseline_ms "$BIN" )
+SLOW_MS=$(( BASE_MS * SLOW_FACTOR ))
+[ "$SLOW_MS" -gt 0 ] || SLOW_MS=1
 sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
+new_slow=$g_slow
 guards "$BIN"
 if [ -z "$g_missing" ]; then
 	echo "                         every guard fired on its own case (13/13: 11 seeded + 2 crafted headers)"
@@ -337,6 +401,15 @@ elif [ "$new_wrong" -lt "$BASELINE" ]; then
 	echo "        Lower PMP3_CORRUPT_BASELINE in this file to lock the improvement in."
 fi
 [ "$ctl_ok" = "0" ] && fail=1
+# Slowness is a failure, not a note. Nothing in this grid comes close today --
+# the slowest corrupted cell runs at 1.3x a healthy decode against a 10x
+# threshold -- so any cell crossing it is new behaviour and worth stopping for.
+if [ "$new_slow" -gt 0 ]; then
+	echo "  FAIL: $new_slow cell(s) took over ${SLOW_MS}ms (${SLOW_FACTOR}x the ${BASE_MS}ms baseline)"
+	echo "        Of those, $g_slow_out produced output -- that subset is invisible to the"
+	echo "        verdict, which reads them as ordinary wrong-output rows."
+	fail=1
+fi
 if [ -n "$g_missing" ]; then
 	echo "  FAIL: guard(s) did not fire on the case that requires them: $g_missing"
 	echo "        A population sweep cannot see a rare guard disappear."
