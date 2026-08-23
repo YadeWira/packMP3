@@ -54,6 +54,10 @@
 #   PMP3_CORRUPT_SLOW_FACTOR=1 ...         control: prove the timing axis
 #                                          discriminates (expect ~34 slow cells)
 #
+# Run against a sanitizer build (`make corrupt-asan`) and the guard regime also
+# checks that each guard sits UPSTREAM of the access it protects -- rejecting
+# after an out-of-range read looks identical in the verdict alone.
+#
 # Exit 0 only if everything passed.
 set -u
 export LC_ALL=C
@@ -489,6 +493,17 @@ guards() { # $1 binary -- sets g_missing
 		# stdout AND stderr: msgout is stdout by default.
 		out=$( timeout 60 "$bin" x -o -np -od"$WORK/out" "$WORK/g.pm3" 2>&1 )
 		case $out in *"$want"*) ;; *) echo "$want";; esac
+		# UPSTREAM POSITION. Rejecting is not enough: a guard placed AFTER the
+		# access it protects still rejects, and the verdict looks identical.
+		# @LPJPG materialised that inside their own fix -- rc=1 AND a sanitizer
+		# finding on the same run, because the if-condition dereferenced before
+		# the guard inside it could act. The two coexist exactly when the guard
+		# is downstream, so a sanitizer build turns "rejects" into "rejects and
+		# is in the right place". Silent on a normal build, which has no such
+		# text to find.
+		case $out in
+			*AddressSanitizer*|*"runtime error"*) echo "$want (guard is DOWNSTREAM of the access)";;
+		esac
 	done > "$WORK/missing.txt"
 
 	# The two header guards are not reachable by flipping bits in a stream: the
@@ -502,6 +517,10 @@ guards() { # $1 binary -- sets g_missing
 		rm -rf "$WORK/out"; mkdir -p "$WORK/out"
 		out=$( timeout 60 "$bin" x -o -np -od"$WORK/out" "$WORK/h.pm3" 2>&1 )
 		case $out in *"frame count"*) ;; *) echo "frame count nframes=$v" >> "$WORK/missing.txt";; esac
+		case $out in
+			*AddressSanitizer*|*"runtime error"*)
+				echo "frame count nframes=$v (guard is DOWNSTREAM)" >> "$WORK/missing.txt";;
+		esac
 	done
 
 	g_missing=$( tr '\n' ',' < "$WORK/missing.txt" | sed 's/,$//; s/,/, /g' )
