@@ -242,8 +242,8 @@ note_time() { # $1 verdict
 sweep() { # $1 binary $2 label
 	local bin=$1 label=$2 f b arch ref full k pct seed verdict rc carch cback
 	g_crash=0; g_hang=0; g_wrong=0; g_cells=0
-	g_r1=0; g_r2=0; g_r3=0; g_r4=0; g_r6=0; g_unreadable=0
-	g_slow=0; g_slow_out=0; g_maxms=0; g_minms=-1; g_fast_out=0; g_canary=""
+	g_r1=0; g_r2=0; g_r3=0; g_r4=0; g_r6=0; g_unreadable=0; g_refused=0; g_rt_ok=0; g_r6_sig=0; g_r6_wrong=0
+	g_slow=0; g_slow_out=0; g_maxms=0; g_minms=-1; g_fast_out=0; g_canary=""; g_books=""
 	for f in $SOURCES; do
 		b=$( basename "$f" )
 		rm -rf "$WORK/a"; mkdir -p "$WORK/a"
@@ -341,14 +341,17 @@ sweep() { # $1 binary $2 label
 		g_cells=$(( g_cells + 1 )); g_r6=$(( g_r6 + 1 ))
 		timeout "$TIMEOUT" "$bin" a -o -np -od"$WORK/ci" "$WORK/c.mp3" >/dev/null 2>&1
 		rc=$?
-		if [ $rc -ge 128 ]; then g_crash=$(( g_crash + 1 )); continue; fi
-		[ $rc -eq 124 ] && { g_hang=$(( g_hang + 1 )); continue; }
+		if [ $rc -ge 128 ]; then g_crash=$(( g_crash + 1 )); g_r6_sig=$(( g_r6_sig + 1 )); continue; fi
+		[ $rc -eq 124 ] && { g_hang=$(( g_hang + 1 )); g_r6_sig=$(( g_r6_sig + 1 )); continue; }
 		carch=$( ls "$WORK/ci"/*.pm3 2>/dev/null | head -1 )
-		[ -n "$carch" ] || continue          # refused: not a bug, just not compressible
+		# Refused at compress: not a bug, but it still needs a bucket. An
+		# outcome with no counter is invisible, and the accounting check below
+		# is what makes that impossible rather than merely remembered.
+		[ -n "$carch" ] || { g_refused=$(( g_refused + 1 )); continue; }
 		timeout "$TIMEOUT" "$bin" x -o -np -od"$WORK/ci/back" "$carch" >/dev/null 2>&1
 		rc=$?
-		if [ $rc -ge 128 ]; then g_crash=$(( g_crash + 1 )); continue; fi
-		[ $rc -eq 124 ] && { g_hang=$(( g_hang + 1 )); continue; }
+		if [ $rc -ge 128 ]; then g_crash=$(( g_crash + 1 )); g_r6_sig=$(( g_r6_sig + 1 )); continue; fi
+		[ $rc -eq 124 ] && { g_hang=$(( g_hang + 1 )); g_r6_sig=$(( g_r6_sig + 1 )); continue; }
 		cback=$( ls "$WORK/ci/back" 2>/dev/null | head -1 )
 		# Two different failures, kept apart. "Compressed, then the archive was
 		# refused" breaks the lossless contract but loses nothing silently --
@@ -361,7 +364,15 @@ sweep() { # $1 binary $2 label
 			g_unreadable=$(( g_unreadable + 1 ))
 		elif [ "$( sha256sum "$WORK/c.mp3" | cut -d" " -f1 )" != \
 		       "$( sha256sum "$WORK/ci/back/$cback" | cut -d" " -f1 )" ]; then
-			g_wrong=$(( g_wrong + 1 ))
+			g_wrong=$(( g_wrong + 1 )); g_r6_wrong=$(( g_r6_wrong + 1 ))
+		else
+			# The success case needs a counter too. Two increments were missing
+			# here -- this one and the regime-local wrong count -- because two
+			# edits meant to add them matched nothing and said so to nobody.
+			# Thirteen of thirty cells landed in no bucket at all, and the
+			# accounting check below caught it on its first run, in the code
+			# written to implement the accounting check.
+			g_rt_ok=$(( g_rt_ok + 1 ))
 		fi
 	done
 
@@ -369,8 +380,19 @@ sweep() { # $1 binary $2 label
 		"$label" "$g_cells" "$g_crash" "$g_hang" "$g_wrong"
 	printf "  %-22s per regime: bytes=%d percent=%d 1-flip=%d 3-flip=%d\n" \
 		"" "$g_r1" "$g_r2" "$g_r3" "$g_r4"
-	printf "  %-22s input side (corrupt mp3 -> compress -> round-trip): %d cells, %d compressed-then-unreadable\n" \
-		"" "$g_r6" "$g_unreadable"
+	printf "  %-22s input side: %d cells = %d refused + %d round-trip ok + %d unreadable + %d wrong + %d signalled\n" \
+		"" "$g_r6" "$g_refused" "$g_rt_ok" "$g_unreadable" "$g_r6_wrong" "$g_r6_sig"
+	# ACCOUNTING. Every cell must land in exactly one bucket, and the buckets
+	# must sum to the cell count. This is the mechanism for the thing that bit
+	# me an hour ago: a class that did not exist when the classifier was
+	# written gets absorbed into a neighbouring bucket, or falls through with
+	# no bucket at all, and nothing says so. @PJPG's formulation is the one
+	# this implements -- separating classes is not a decision taken once, it
+	# is retaken every time a new class appears, and the new class almost
+	# always appears AFTER the classifier. A sum that no longer adds up is the
+	# only thing that notices without anyone remembering to look.
+	g_acct=$(( g_refused + g_rt_ok + g_unreadable + g_r6_wrong + g_r6_sig ))
+	[ "$g_acct" -eq "$g_r6" ] || g_books=" input-side: $g_r6 cells but $g_acct accounted for"
 	[ -n "$g_canary" ] && printf "  %-22s CANARY FAILED:%s\n" "" "$g_canary"
 	printf "  %-22s timing: baseline=%dms  slow>%dms: %d (with output %d)  fast<%dms with output: %d  [%d..%dms]\n" \
 		"" "$BASE_MS" "$SLOW_MS" "$g_slow" "$g_slow_out" "$FAST_MS" "$g_fast_out" "$g_minms" "$g_maxms"
@@ -482,7 +504,7 @@ FAST_MS=$(( BASE_MS / FAST_DIV ))
 [ "$SLOW_MS" -gt 0 ] || SLOW_MS=1
 sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
-new_slow=$g_slow; new_canary=$g_canary; new_fast=$g_fast_out; new_unread=$g_unreadable
+new_slow=$g_slow; new_canary=$g_canary; new_fast=$g_fast_out; new_unread=$g_unreadable; new_books=$g_books
 guards "$BIN"
 if [ -z "$g_missing" ]; then
 	echo "                         every guard fired on its own case (13/13: 11 seeded + 2 crafted headers)"
@@ -525,6 +547,12 @@ if [ -n "$new_canary" ]; then
 	echo "  FAIL: undamaged archive(s) did not round-trip:$new_canary"
 	echo "        The harness is broken, not the codec -- every other number in"
 	echo "        this run is void. Check the binary, the paths, and the hashing."
+	fail=1
+fi
+if [ -n "$new_books" ]; then
+	echo "  FAIL: outcome classes do not add up --$new_books"
+	echo "        A cell landed in no bucket, or in two. Some outcome exists that"
+	echo "        the classifier was not written for."
 	fail=1
 fi
 if [ "$new_unread" -gt "$UNREADABLE_BASELINE" ]; then
