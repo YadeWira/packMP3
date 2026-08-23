@@ -210,6 +210,11 @@ static_assert( ( ( ( 576 / 2 ) + 1 ) - 1 ) * 2 ==
    pmp3tbl.h. Pinned below so the bound and the table cannot drift. */
 #define BANDWIDTH_BOUNDS_MAX	22
 
+/* Sample-rate values the header check admits: 0..2, since 0x3 is rejected in
+   pmp_read_header. Two tables are dimensioned to exactly that and indexed by
+   the field with no bound of their own, so the two must move together. */
+#define SAMPLERATE_SLOTS	3
+
 /* Pin the RELATIONSHIPS, not the spellings. Each of these bounds is only
    correct relative to a buffer size declared elsewhere, and the two are free
    to drift apart in an edit that looks local and safe. Asserting the property
@@ -226,6 +231,10 @@ static_assert( COEF_MAX_POS + 1 < COEF_SLOTS,
 	"coefficient bound must leave room for the abs[p+1] read" );
 static_assert( 1 + COEF_SLOTS <= COEF_BUF_SIZE,
 	"the +1 pointer offset plus the memset span must fit the allocation" );
+static_assert( (int)( sizeof( mp3_bandwidth_conv ) / sizeof( mp3_bandwidth_conv[0] ) ) >= SAMPLERATE_SLOTS,
+	"mp3_bandwidth_conv needs a row for every sample rate pmp_read_header admits" );
+static_assert( (int)( sizeof( mp3_bitrate_pred ) / sizeof( mp3_bitrate_pred[0] ) ) >= SAMPLERATE_SLOTS,
+	"mp3_bitrate_pred needs a row for every sample rate pmp_read_header admits" );
 static_assert( BANDWIDTH_BOUNDS_MAX + 1 ==
 	(int)( sizeof( bandwidth_bounds[0][0] ) / sizeof( bandwidth_bounds[0][0][0] ) ),
 	"BANDWIDTH_BOUNDS_MAX must track the bandwidth_bounds row length" );
@@ -4614,6 +4623,21 @@ INTERN inline bool pmp_read_header( iostream* str )
 	i_mixed			= 0;
 	i_aux_h			= -2;
 	
+	/* LOAD-BEARING, and not for the reason the original comment gives.
+	   i_samplerate is a 2-bit field, so the file can hold 0..3, but two tables
+	   indexed by it have only THREE rows -- mp3_bandwidth_conv[3][576+1] and
+	   mp3_bitrate_pred[3][2049] -- and both are indexed with no check of their
+	   own. Rejecting 0x3 here is the only thing standing between a crafted
+	   header and a read off the end of those rows. The relationship is pinned
+	   at the definition of SAMPLERATE_SLOTS so widening one without the other
+	   fails to build.
+
+	   Verified over the four possible values under ASAN+UBSan: none produces a
+	   sanitizer finding, because 0x3 never reaches the tables. That is the
+	   confirming measurement, not the argument -- @PJPG found the same shape
+	   unguarded in packJPG, where segm_cnt comes out of the header by memcpy
+	   and indexes segm_tables[49][50] raw, giving an out-of-bounds read at
+	   segm_cnt=50 that a valid 49 does not produce. */
 	// check for possible mistakes made by myself
 	if ( ( i_bitrate == 0xF ) || ( i_samplerate == 0x3 ) ) {
 		snprintf( errormessage, MSG_SIZE, "not a proper .pm3 file" );
