@@ -209,13 +209,22 @@ sweep() { # $1 binary $2 label
 # seeds were found by scanning, not chosen; the flip generator is the same one
 # the sweeps use, so the archives regenerate byte-identically from the corpus.
 #
-#   seed:flips  guard
-#   2:1         coefficient magnitude past the Huffman table maximum
-#   10:1        ancillary size outside the LAME prediction buffer
-#   25:1        arithmetic decoder exhausted while reading main data
-#   114:3       sv_bound outside the granule  <- the rare one, 3 in 1000
-#   139:1       region sizes indexing past bandwidth_bounds[23]
-#   364:1       Huffman table index with no model behind it
+#   source:seed:flips   guard
+#   plain:2:1           coefficient magnitude past the Huffman table maximum
+#   plain:10:1          ancillary size outside the LAME prediction buffer
+#   plain:25:1          arithmetic decoder exhausted while reading main data
+#   plain:114:3         sv_bound outside the granule  <- rare, 3 in 1000
+#   plain:139:1         region sizes indexing past bandwidth_bounds[23]
+#   plain:364:1         Huffman table index with no model behind it
+#   plain:1:1           LAME ancillary prediction mismatch
+#   cover_jpg:2:1       meta-data block
+#   cover_jpg:43:1      APIC record
+#   cover_jpg:104:1     packJPG cover decode
+#
+# The last four came from asking the completing half of the question: not
+# "does the grid cover this bug" but "which reachable rejection sites have no
+# case of their own". Tagging every rejection site with its line number showed
+# the grid reaches 12 of 69, and that five of those twelve were unpinned.
 guards() { # $1 binary -- sets g_missing
 	local bin=$1 arch ref spec seed k want out
 	g_missing=""
@@ -227,10 +236,31 @@ guards() { # $1 binary -- sets g_missing
 	"$bin" a -o -np -od"$WORK/a" "$DATA/plain.mp3" >/dev/null 2>&1
 	arch="$WORK/a/plain.pm3"
 	[ -s "$arch" ] || { g_missing=" (could not build plain.pm3)"; return; }
-	printf '%s\n' "2:1:coefficients" "10:1:ancillary size" "25:1:main data" \
-		"114:3:sv_bound" "139:1:region sizes" "364:1:bad huffman table" | while IFS= read -r spec; do
+	# Cover-art guards need an archive that HAS cover art, so the source file
+	# is part of each case rather than fixed.
+	rm -rf "$WORK/ac"; mkdir -p "$WORK/ac"
+	if [ -f "$DATA/cover_jpg.mp3" ]; then
+		"$bin" a -o -np -od"$WORK/ac" "$DATA/cover_jpg.mp3" >/dev/null 2>&1
+	fi
+	printf '%s\n' \
+		"plain:2:1:coefficients" \
+		"plain:10:1:ancillary size" \
+		"plain:25:1:main data" \
+		"plain:114:3:sv_bound" \
+		"plain:139:1:region sizes" \
+		"plain:364:1:bad huffman table" \
+		"plain:1:1:ancilary prediction error" \
+		"cover_jpg:2:1:meta-data" \
+		"cover_jpg:43:1:corrupt APIC record" \
+		"cover_jpg:104:1:packJPG decode failed" | while IFS= read -r spec; do
+		src=${spec%%:*}; spec=${spec#*:}
 		seed=${spec%%:*}; spec=${spec#*:}; k=${spec%%:*}; want=${spec#*:}
-		flip_file "$arch" "$WORK/g.pm3" "$seed" "$k" || { echo "$want"; continue; }
+		case $src in
+			plain)     from="$arch";;
+			cover_jpg) from="$WORK/ac/cover_jpg.pm3";;
+		esac
+		[ -s "$from" ] || { echo "$want (no $src archive)"; continue; }
+		flip_file "$from" "$WORK/g.pm3" "$seed" "$k" || { echo "$want"; continue; }
 		rm -rf "$WORK/out"; mkdir -p "$WORK/out"
 		# stdout AND stderr: msgout is stdout by default.
 		out=$( timeout 60 "$bin" x -o -np -od"$WORK/out" "$WORK/g.pm3" 2>&1 )
@@ -259,7 +289,7 @@ sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
 guards "$BIN"
 if [ -z "$g_missing" ]; then
-	echo "                         every guard fired on its own case (8/8: 6 seeded + 2 crafted headers)"
+	echo "                         every guard fired on its own case (12/12: 10 seeded + 2 crafted headers)"
 else
 	echo "                         GUARDS NOT REACHED: $g_missing"
 fi
