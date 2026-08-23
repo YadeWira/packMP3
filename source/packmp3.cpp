@@ -3122,7 +3122,13 @@ INTERN bool uncompress_pmp( void )
 	   anything is written, rather than at each stage. */
 	if ( decoder->is_corrupt() ) {
 		delete( decoder );
-		snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream" );
+		/* Qualified like every sibling message rather than left bare. It used
+		   to read "truncated or corrupt pm3 stream", which is a PREFIX of all
+		   eight others, so a test that pins a guard by its reason cannot tell
+		   this one from any of them -- the oracle stops discriminating without
+		   anything failing. Pinning "rejects for THIS reason" is stronger than
+		   pinning "rejects", but only while the reasons stay distinguishable. */
+		snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (arithmetic decoder)" );
 		errorlevel = 2;
 		return false;
 	}

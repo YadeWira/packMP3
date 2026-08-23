@@ -217,6 +217,7 @@ sweep() { # $1 binary $2 label
 #   plain:139:1         region sizes indexing past bandwidth_bounds[23]
 #   plain:364:1         Huffman table index with no model behind it
 #   plain:1:1           LAME ancillary prediction mismatch
+#   plain:53:1          central refusal in uncompress_pmp
 #   cover_jpg:2:1       meta-data block
 #   cover_jpg:43:1      APIC record
 #   cover_jpg:104:1     packJPG cover decode
@@ -250,6 +251,7 @@ guards() { # $1 binary -- sets g_missing
 		"plain:139:1:region sizes" \
 		"plain:364:1:bad huffman table" \
 		"plain:1:1:ancilary prediction error" \
+		"plain:53:1:arithmetic decoder" \
 		"cover_jpg:2:1:meta-data" \
 		"cover_jpg:43:1:corrupt APIC record" \
 		"cover_jpg:104:1:packJPG decode failed" | while IFS= read -r spec; do
@@ -289,7 +291,7 @@ sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
 guards "$BIN"
 if [ -z "$g_missing" ]; then
-	echo "                         every guard fired on its own case (12/12: 10 seeded + 2 crafted headers)"
+	echo "                         every guard fired on its own case (13/13: 11 seeded + 2 crafted headers)"
 else
 	echo "                         GUARDS NOT REACHED: $g_missing"
 fi
