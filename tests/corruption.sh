@@ -493,6 +493,16 @@ guards() { # $1 binary -- sets g_missing
 		# stdout AND stderr: msgout is stdout by default.
 		out=$( timeout 60 "$bin" x -o -np -od"$WORK/out" "$WORK/g.pm3" 2>&1 )
 		case $out in *"$want"*) ;; *) echo "$want";; esac
+		# This also covers the class @LPJPG identified as invisible to any
+		# syntactic scan: a check that is PRESENT and points at the WRONG
+		# VARIABLE. Their guard tested nextfree while the index was node --
+		# different variables, so there is no syntactic relation to search for,
+		# and a scanner can only tell that the code guards SOMETHING. Measured
+		# here by rewriting one guard to test only s_r0 while the index is
+		# s_r0 + region1_size + 2: both signals fire at once, the expected
+		# message is absent AND the sanitizer reports "index 23 out of bounds
+		# for type 'int [23]'". Execution sees what the scan cannot.
+		#
 		# UPSTREAM POSITION. Rejecting is not enough: a guard placed AFTER the
 		# access it protects still rejects, and the verdict looks identical.
 		# @LPJPG materialised that inside their own fix -- rc=1 AND a sanitizer
