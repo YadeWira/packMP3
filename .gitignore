@@ -45,3 +45,4 @@ CONEXION-IA*.md
 
 # generated test corpus (tests/make_testdata.sh)
 /tests/data/
+/source/packMP3-fuzz

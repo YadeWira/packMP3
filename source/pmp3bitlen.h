@@ -2,9 +2,42 @@
 	bitlength makro header file
 	----------------------------------------------- */
 
-#define BITLEN8192P(v)	( (pbitlen_p8192)[ ( v ) ] )
-#define BITMAX16(bl)	( (pbitmax_16)[ ( bl ) ] )
-#define BITLEN8224N(v)	( (pbitlen_n8224_8223+8224)[ ( v ) ] )
+/* These three are unchecked table lookups whose index comes, on some paths,
+   from data read out of a file. Sanitizers do NOT cover them equally: UBSan's
+   bounds check fires for BITLEN8192P and BITMAX16, where the array type is
+   visible at the point of access, and is BLIND to BITLEN8224N, because the
+   (table+8224) pointer arithmetic erases the array type before the subscript.
+   ASAN's global redzones did not fire for any of the three when tested
+   directly. So a clean sanitizer sweep is weaker evidence here than it looks,
+   and the difference is invisible unless you check the instrument first.
+
+   Building with -DPMP3_CHECK_BITLEN turns all three into range-checked
+   lookups that abort loudly with the offending index. It is a measuring
+   instrument, not a safety feature: it costs a branch in the encoder's inner
+   loop, so it is off in release builds. Use it when fuzzing, which is the
+   only way an out-of-range index at BITLEN8224N would be seen at all. */
+#ifdef PMP3_CHECK_BITLEN
+	#include <cstdio>
+	#include <cstdlib>
+	static inline int pmp3_bitlen_check( long long v, long long lo, long long hi, const char* which, const char* file, int line )
+	{
+		if ( ( v < lo ) || ( v > hi ) ) {
+			fflush( stdout );
+			fprintf( stderr, "\nPMP3_CHECK_BITLEN: %s index %lld out of range [%lld..%lld] at %s:%d\n",
+				which, v, lo, hi, file, line );
+			fflush( stderr );
+			abort();
+		}
+		return (int) v;
+	}
+	#define BITLEN8192P(v)	( (pbitlen_p8192)[ pmp3_bitlen_check( (v), 0, 8223, "BITLEN8192P", __FILE__, __LINE__ ) ] )
+	#define BITMAX16(bl)	( (pbitmax_16)[ pmp3_bitlen_check( (bl), 0, 15, "BITMAX16", __FILE__, __LINE__ ) ] )
+	#define BITLEN8224N(v)	( (pbitlen_n8224_8223+8224)[ pmp3_bitlen_check( (v), -8224, 8223, "BITLEN8224N", __FILE__, __LINE__ ) ] )
+#else
+	#define BITLEN8192P(v)	( (pbitlen_p8192)[ ( v ) ] )
+	#define BITMAX16(bl)	( (pbitmax_16)[ ( bl ) ] )
+	#define BITLEN8224N(v)	( (pbitlen_n8224_8223+8224)[ ( v ) ] )
+#endif
 
 
 /* -----------------------------------------------

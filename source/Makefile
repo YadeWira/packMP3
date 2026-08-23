@@ -172,7 +172,7 @@ $(TARGET): $(CLIOBJ) $(RES)
 	$(CXX) -o $@ $^ -s $(LDFLAGS)
 	$(UPX)
 
-.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb test
+.PHONY: all dev lib so dll dll-x64 dll-x86 dll-all clean linux-x64 win-x64 win-x86 all-platforms pgo deb test fuzzbuild
 
 # Regression suite: reversibility AND proof that each codec actually ran.
 # Generates its own corpus on first use. See tests/regression.sh for why the
@@ -182,6 +182,27 @@ test: $(TARGET)
 	@bash ../tests/regression.sh
 
 all: $(TARGET)
+
+# Build for fuzzing: ASAN + UBSan, plus -DPMP3_CHECK_BITLEN, which turns the
+# table-lookup macros in pmp3bitlen.h into range-checked lookups that abort
+# with the offending index.
+#
+# The bitlen flag exists because the sanitizers do not cover those lookups
+# evenly, and the gap is invisible unless you test the instrument itself. UBSan
+# catches an out-of-range BITLEN8192P, where the array type is visible at the
+# subscript. It is BLIND to BITLEN8224N, whose (table+8224) pointer arithmetic
+# erases that type. ASAN's global redzones fired for neither when probed with a
+# deliberate overrun. A clean sweep from a blind instrument reads exactly like a
+# clean sweep from a good one, so build the instrument first and check that it
+# can see the bug you are claiming not to have.
+#
+# Slow and not for shipping: the range check costs a branch in the encoder's
+# inner loop.
+fuzzbuild:
+	$(CXX) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+		-std=c++17 -I. -DUNIX -DPMP3_CHECK_BITLEN -pthread \
+		-o $(TARGET)-fuzz $(CSRC) $(CXXSRC) $(LDFLAGS)
+	@echo "built $(TARGET)-fuzz -- run with ASAN_OPTIONS=detect_leaks=0"
 
 # Developer build: debug symbols, assertions. Two deliberate differences
 # from before:
