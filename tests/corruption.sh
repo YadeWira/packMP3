@@ -201,7 +201,7 @@ sweep() { # $1 binary $2 label
 	local bin=$1 label=$2 f b arch ref full k pct seed verdict
 	g_crash=0; g_hang=0; g_wrong=0; g_cells=0
 	g_r1=0; g_r2=0; g_r3=0; g_r4=0
-	g_slow=0; g_slow_out=0; g_maxms=0
+	g_slow=0; g_slow_out=0; g_maxms=0; g_canary=""
 	for f in $SOURCES; do
 		b=$( basename "$f" )
 		rm -rf "$WORK/a"; mkdir -p "$WORK/a"
@@ -211,6 +211,22 @@ sweep() { # $1 binary $2 label
 		ref=$( sha256sum "$f" | cut -d' ' -f1 )
 		full=$( stat -c%s "$arch" )
 		[ "$full" -gt 200 ] || continue
+
+		# CANARY: the UNDAMAGED archive, run through the same path as every
+		# damaged one and required to come back identical. Not a test of the
+		# codec -- regression.sh covers that -- but of this harness. If the
+		# binary is missing, the output directory is wrong, or the hash
+		# comparison is broken, every cell reads as "reject" and the run looks
+		# like a decoder that rejects everything, which is a coherent and
+		# entirely false result. @PJPG lost a whole run to exactly that: a
+		# missing /usr/bin/time made every row report "no output", and the row
+		# for the intact file is what exposed it. A control you have to
+		# remember to run separately is one you will eventually skip; a row
+		# inside the same table cannot be skipped.
+		verdict=$( classify "$bin" "$arch" "$ref" ); verdict=${verdict%% *}
+		if [ "$verdict" != "ident" ]; then
+			g_canary="$g_canary $( basename "$f" )($verdict)"
+		fi
 
 		# REGIME 1: bytes off the end. The one the old sweeps missed.
 		for k in $BYTE_CUTS; do
@@ -257,6 +273,7 @@ sweep() { # $1 binary $2 label
 		"$label" "$g_cells" "$g_crash" "$g_hang" "$g_wrong"
 	printf "  %-22s per regime: bytes=%d percent=%d 1-flip=%d 3-flip=%d\n" \
 		"" "$g_r1" "$g_r2" "$g_r3" "$g_r4"
+	[ -n "$g_canary" ] && printf "  %-22s CANARY FAILED:%s\n" "" "$g_canary"
 	printf "  %-22s timing: baseline=%dms threshold=%dms slowest=%dms slow=%d (with output: %d)\n" \
 		"" "$BASE_MS" "$SLOW_MS" "$g_maxms" "$g_slow" "$g_slow_out"
 	# An empty regime is a broken harness reporting a clean pass. This is not
@@ -365,7 +382,7 @@ SLOW_MS=$(( BASE_MS * SLOW_FACTOR ))
 [ "$SLOW_MS" -gt 0 ] || SLOW_MS=1
 sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
-new_slow=$g_slow
+new_slow=$g_slow; new_canary=$g_canary
 guards "$BIN"
 if [ -z "$g_missing" ]; then
 	echo "                         every guard fired on its own case (13/13: 11 seeded + 2 crafted headers)"
@@ -404,6 +421,12 @@ fi
 # Slowness is a failure, not a note. Nothing in this grid comes close today --
 # the slowest corrupted cell runs at 1.3x a healthy decode against a 10x
 # threshold -- so any cell crossing it is new behaviour and worth stopping for.
+if [ -n "$new_canary" ]; then
+	echo "  FAIL: undamaged archive(s) did not round-trip:$new_canary"
+	echo "        The harness is broken, not the codec -- every other number in"
+	echo "        this run is void. Check the binary, the paths, and the hashing."
+	fail=1
+fi
 if [ "$new_slow" -gt 0 ]; then
 	echo "  FAIL: $new_slow cell(s) took over ${SLOW_MS}ms (${SLOW_FACTOR}x the ${BASE_MS}ms baseline)"
 	echo "        Of those, $g_slow_out produced output -- that subset is invisible to the"
