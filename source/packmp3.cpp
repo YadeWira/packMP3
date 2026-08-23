@@ -213,7 +213,20 @@ static_assert( ( ( ( 576 / 2 ) + 1 ) - 1 ) * 2 ==
    that memset into a 1102-byte write 524 bytes before the buffer. */
 #define COEF_SLOTS		578
 #define COEF_BUF_SIZE	( COEF_SLOTS + 1 + 1 )
-#define COEF_MAX_POS	576
+/* The decode-side bound on sv_bound and region_bounds. Set to COEF_SLOTS, the
+   memory limit, and NOT to 576, the number of coefficients in an MP3 granule.
+   That distinction cost a real regression: bounded at 576, the decoder refused
+   archives THIS ENCODER PRODUCES. The encoder emits sv_bound = 578 on some
+   malformed input -- measured, 24 of 300 corrupted mp3s, and harmless there
+   because 578 still lands inside the COEF_BUF_SIZE allocation -- so a
+   compressor that accepts a file and a decompressor that then rejects its own
+   output is worse than the asymmetry it was meant to fix.
+
+   The check answers "can this overflow", not "is this a valid granule", and
+   the answer to the first is COEF_SLOTS. Bounding to the format number
+   applied a validity limit to a memory question. The overflow that motivated
+   the bound had sv_bound = -524, which the lower half catches regardless. */
+#define COEF_MAX_POS	COEF_SLOTS
 
 /* Last valid index of bandwidth_bounds[][][], declared as [22+1] in
    pmp3tbl.h. Pinned below so the bound and the table cannot drift. */
@@ -236,8 +249,10 @@ static_assert( LAME_ANC_MAX_BITS / 8 < LAME_ANC_BUF_SIZE,
 	"ancillary bit bound must leave the trailing partial byte inside the buffer" );
 static_assert( LAME_ANC_MAX_BITS > 0,
 	"ancillary bit bound must be positive" );
-static_assert( COEF_MAX_POS + 1 < COEF_SLOTS,
-	"coefficient bound must leave room for the abs[p+1] read" );
+static_assert( COEF_MAX_POS + 1 <= COEF_SLOTS + 1,
+	"the coefficient bound must stay within the slot count plus the abs[p+1] read" );
+static_assert( COEF_MAX_POS <= COEF_SLOTS,
+	"the coefficient bound must not exceed what the buffers hold" );
 static_assert( 1 + COEF_SLOTS <= COEF_BUF_SIZE,
 	"the +1 pointer offset plus the memset span must fit the allocation" );
 static_assert( (int)( sizeof( mp3_bandwidth_conv ) / sizeof( mp3_bandwidth_conv[0] ) ) >= SAMPLERATE_SLOTS,

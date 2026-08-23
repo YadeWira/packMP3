@@ -70,6 +70,14 @@ La suite **pinea el 14** para que no crezca en silencio: si sube, falla.
   script que consulte el código de salida. Es anterior a todo este trabajo
   (verificado también contra v3.0c). Arreglarlo es un cambio de comportamiento
   visible para quien ya haya escrito scripts alrededor.
+- **Dos mp3 corruptos que comprimen y después no se pueden descomprimir.**
+  Medido: 2 de 150 entradas dañadas. El compresor acepta el archivo y el
+  decompresor rechaza su propia salida (`sv_bound -302`, `coefficients`), o
+  sea que el encoder emite valores que el decoder considera inválidos. Rompe
+  el contrato sin pérdida, pero **no es silencioso** — el usuario recibe un
+  error. Es anterior a todo este trabajo: en v3.0e los dos casos **crashean**,
+  y con las guardas actuales son rechazos limpios. La suite lo pinea aparte
+  del conteo de salidas incorrectas, en 2, para que no crezca sin que se note.
 - **`-ver` verifica consistencia, no integridad.** Descomprime, recomprime y
   compara. Un archivo truncado que sea codificación válida de otro mp3 pasa
   `-ver` sin objeción, porque no hay nada inconsistente. Vale documentarlo en
@@ -93,9 +101,10 @@ en `list`/`stats` no se reproducen.
 
 Para que la decisión sobre la 3.0g se tome sabiendo qué se está publicando:
 
-- `tests/corruption.sh` — cinco regímenes de daño **declarados en el arnés**,
-  no elegidos por corrida: bytes del final, porcentaje, un bit, tres bits, y
-  cada guarda con su caso determinista. 13 guardas pineadas por nombre.
+- `tests/corruption.sh` — seis regímenes de daño **declarados en el arnés**,
+  no elegidos por corrida: bytes del final, porcentaje, un bit, tres bits, el **lado de
+  entrada** (mp3 corrupto → comprimir → round-trip), y cada guarda con su caso
+  determinista. 13 guardas pineadas por nombre.
 - Un **canario por fuente**: el archivo sin dañar, por el mismo clasificador,
   obligado a volver idéntico. Sin él, un arnés roto imprime cero crashes, cero
   cuelgues y cero salidas incorrectas — el mejor resultado posible sobre una

@@ -5,7 +5,7 @@
 # turns into a crash, a hang, or -- as far as the format allows -- a silently
 # wrong file.
 #
-# WHY THIS EXISTS, AND WHY IT DECLARES FIVE REGIMES INSTEAD OF ONE.
+# WHY THIS EXISTS, AND WHY IT DECLARES SIX REGIMES INSTEAD OF ONE.
 #
 # Every corruption sweep run against packMP3 up to 2026-08-22 truncated by
 # PERCENTAGE: 2%, 4%, ... 98%. Not one cut a handful of bytes off the end.
@@ -67,6 +67,10 @@ trap 'rm -rf "$WORK"' EXIT
 
 QUICK=${PMP3_CORRUPT_QUICK:-0}
 BASELINE=${PMP3_CORRUPT_BASELINE:-14}
+# Corrupt mp3s that compress and then cannot be decompressed. Pre-existing and
+# not silent: both cases measured here CRASHED v3.0e and are clean rejections
+# now. Pinned so the count cannot grow unnoticed.
+UNREADABLE_BASELINE=${PMP3_CORRUPT_UNREADABLE:-2}
 CONTROL=${PMP3_CORRUPT_CONTROL:-}
 # Per-case timeout. Configurable so the hang classifier can be PROVEN to fire:
 # PMP3_CORRUPT_TIMEOUT=0.01 makes every normal decode overrun and the suite
@@ -92,9 +96,9 @@ FAST_DIV=${PMP3_CORRUPT_FAST_DIV:-8}
 [ -d "$DATA" ] || bash "$HERE/make_testdata.sh" >/dev/null
 
 if [ "$QUICK" = "1" ]; then
-	BYTE_CUTS="1 2 5 13"; PCT_CUTS="5 25 60"; FLIP_SEEDS=40
+	BYTE_CUTS="1 2 5 13"; PCT_CUTS="5 25 60"; FLIP_SEEDS=40; INPUT_SEEDS=30
 else
-	BYTE_CUTS="1 2 3 5 8 13 21 34 55"; PCT_CUTS="2 5 10 25 40 60 80"; FLIP_SEEDS=200
+	BYTE_CUTS="1 2 3 5 8 13 21 34 55"; PCT_CUTS="2 5 10 25 40 60 80"; FLIP_SEEDS=200; INPUT_SEEDS=150
 fi
 
 # Sources: the generated corpus, minus anything that does not compress to a
@@ -128,6 +132,24 @@ d = bytearray(open(sys.argv[1], 'rb').read())
 d[7:11] = struct.pack('>I', int(sys.argv[3]) & 0xFFFFFFFF)
 open(sys.argv[2], 'wb').write(d)
 HDR
+
+# Corruption for the INPUT side. Aimed at the bytes just after each frame
+# sync word, which is where the side info lives -- random bytes anywhere else
+# mostly land in payload the parser never interprets.
+cat > "$WORK/mflip.py" <<'MPY'
+import sys, random
+src, dst, seed, k = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+d = bytearray(open(src, 'rb').read())
+r = random.Random(seed)
+pos = [i for i in range(len(d)-1) if d[i] == 0xFF and (d[i+1] & 0xE0) == 0xE0]
+for _ in range(k):
+    if pos and r.random() < 0.8:
+        p = r.choice(pos); off = p + r.randint(2, 34)
+        if off < len(d): d[off] = r.randrange(256)
+    else:
+        d[r.randrange(len(d))] = r.randrange(256)
+open(dst, 'wb').write(d)
+MPY
 
 flip_file() { # $1 archive $2 out $3 seed $4 nflips
 	python3 "$WORK/flip.py" "$1" "$2" "$3" "$4" || return 1
@@ -218,9 +240,9 @@ note_time() { # $1 verdict
 
 # Run every regime against one binary. Sets the g_* counters.
 sweep() { # $1 binary $2 label
-	local bin=$1 label=$2 f b arch ref full k pct seed verdict
+	local bin=$1 label=$2 f b arch ref full k pct seed verdict rc carch cback
 	g_crash=0; g_hang=0; g_wrong=0; g_cells=0
-	g_r1=0; g_r2=0; g_r3=0; g_r4=0
+	g_r1=0; g_r2=0; g_r3=0; g_r4=0; g_r6=0; g_unreadable=0
 	g_slow=0; g_slow_out=0; g_maxms=0; g_minms=-1; g_fast_out=0; g_canary=""
 	for f in $SOURCES; do
 		b=$( basename "$f" )
@@ -302,10 +324,53 @@ sweep() { # $1 binary $2 label
 			note_time "$verdict"
 		done
 	fi
+	# REGIME 6: the INPUT side. Every regime above damages the .pm3 and
+	# decodes it; none feeds a damaged .mp3 to the COMPRESSOR. That is the path
+	# where the most reachable of this week's overflows lived -- the ancillary
+	# write is hit by anyone compressing a file they did not produce -- and the
+	# harness had no cell on it at all. packMP3 is lossless, so the oracle is
+	# exact: whatever compresses must decompress back to the same bytes,
+	# corrupt input included. Prompted by @LPJPG, who built the equivalent for
+	# packJPG after finding the in-tree fuzzer only ever attacked the archive
+	# side.
+	set -- $SOURCES
+	for seed in $( seq 1 $INPUT_SEEDS ); do
+		python3 "$WORK/mflip.py" "$1" "$WORK/c.mp3" "$seed" 12 2>/dev/null || continue
+		[ -s "$WORK/c.mp3" ] || continue
+		rm -rf "$WORK/ci"; mkdir -p "$WORK/ci/back"
+		g_cells=$(( g_cells + 1 )); g_r6=$(( g_r6 + 1 ))
+		timeout "$TIMEOUT" "$bin" a -o -np -od"$WORK/ci" "$WORK/c.mp3" >/dev/null 2>&1
+		rc=$?
+		if [ $rc -ge 128 ]; then g_crash=$(( g_crash + 1 )); continue; fi
+		[ $rc -eq 124 ] && { g_hang=$(( g_hang + 1 )); continue; }
+		carch=$( ls "$WORK/ci"/*.pm3 2>/dev/null | head -1 )
+		[ -n "$carch" ] || continue          # refused: not a bug, just not compressible
+		timeout "$TIMEOUT" "$bin" x -o -np -od"$WORK/ci/back" "$carch" >/dev/null 2>&1
+		rc=$?
+		if [ $rc -ge 128 ]; then g_crash=$(( g_crash + 1 )); continue; fi
+		[ $rc -eq 124 ] && { g_hang=$(( g_hang + 1 )); continue; }
+		cback=$( ls "$WORK/ci/back" 2>/dev/null | head -1 )
+		# Two different failures, kept apart. "Compressed, then the archive was
+		# refused" breaks the lossless contract but loses nothing silently --
+		# the user is told. "Decoded to different bytes" is silent corruption.
+		# Counting them together would hide an improvement inside a regression:
+		# both of the cases seen here CRASHED v3.0e and are clean rejections
+		# now, so the same cell moved from the worst class to a mild one while
+		# a single counter would have read it as two new silent failures.
+		if [ -z "$cback" ]; then
+			g_unreadable=$(( g_unreadable + 1 ))
+		elif [ "$( sha256sum "$WORK/c.mp3" | cut -d" " -f1 )" != \
+		       "$( sha256sum "$WORK/ci/back/$cback" | cut -d" " -f1 )" ]; then
+			g_wrong=$(( g_wrong + 1 ))
+		fi
+	done
+
 	printf "  %-22s cells=%-5d crash=%-4d hang=%-4d silently-wrong=%d\n" \
 		"$label" "$g_cells" "$g_crash" "$g_hang" "$g_wrong"
 	printf "  %-22s per regime: bytes=%d percent=%d 1-flip=%d 3-flip=%d\n" \
 		"" "$g_r1" "$g_r2" "$g_r3" "$g_r4"
+	printf "  %-22s input side (corrupt mp3 -> compress -> round-trip): %d cells, %d compressed-then-unreadable\n" \
+		"" "$g_r6" "$g_unreadable"
 	[ -n "$g_canary" ] && printf "  %-22s CANARY FAILED:%s\n" "" "$g_canary"
 	printf "  %-22s timing: baseline=%dms  slow>%dms: %d (with output %d)  fast<%dms with output: %d  [%d..%dms]\n" \
 		"" "$BASE_MS" "$SLOW_MS" "$g_slow" "$g_slow_out" "$FAST_MS" "$g_fast_out" "$g_minms" "$g_maxms"
@@ -317,6 +382,7 @@ sweep() { # $1 binary $2 label
 	[ "$g_r2" -eq 0 ] && g_empty="$g_empty percent-cut"
 	[ "$g_r3" -eq 0 ] && g_empty="$g_empty single-flip"
 	[ "$g_r4" -eq 0 ] && g_empty="$g_empty multi-flip"
+	[ "$g_r6" -eq 0 ] && g_empty="$g_empty input-side"
 }
 
 # REGIME 5: every guard by name.
@@ -408,7 +474,7 @@ guards() { # $1 binary -- sets g_missing
 	g_missing=$( tr '\n' ',' < "$WORK/missing.txt" | sed 's/,$//; s/,/, /g' )
 }
 
-echo "packMP3 corruption suite -- five regimes, declared here rather than chosen per run"
+echo "packMP3 corruption suite -- six regimes, declared here rather than chosen per run"
 echo
 BASE_MS=$( baseline_ms "$BIN" )
 SLOW_MS=$(( BASE_MS * SLOW_FACTOR ))
@@ -416,7 +482,7 @@ FAST_MS=$(( BASE_MS / FAST_DIV ))
 [ "$SLOW_MS" -gt 0 ] || SLOW_MS=1
 sweep "$BIN" "$( basename "$BIN" )"
 new_crash=$g_crash; new_hang=$g_hang; new_wrong=$g_wrong; new_empty=$g_empty
-new_slow=$g_slow; new_canary=$g_canary; new_fast=$g_fast_out
+new_slow=$g_slow; new_canary=$g_canary; new_fast=$g_fast_out; new_unread=$g_unreadable
 guards "$BIN"
 if [ -z "$g_missing" ]; then
 	echo "                         every guard fired on its own case (13/13: 11 seeded + 2 crafted headers)"
@@ -459,6 +525,12 @@ if [ -n "$new_canary" ]; then
 	echo "  FAIL: undamaged archive(s) did not round-trip:$new_canary"
 	echo "        The harness is broken, not the codec -- every other number in"
 	echo "        this run is void. Check the binary, the paths, and the hashing."
+	fail=1
+fi
+if [ "$new_unread" -gt "$UNREADABLE_BASELINE" ]; then
+	echo "  FAIL: compressed-then-unreadable rose to $new_unread (baseline $UNREADABLE_BASELINE)"
+	echo "        The compressor accepted a file and the decompressor refused its own"
+	echo "        output. Not silent -- the user is told -- but the round trip is gone."
 	fail=1
 fi
 if [ "$new_fast" -gt 0 ]; then
