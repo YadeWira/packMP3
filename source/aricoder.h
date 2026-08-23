@@ -108,16 +108,28 @@ class aricoder
 	   VALID side, and 64 clears it while still catching nearly everything
 	   above. Overlap kills the guarantee, not the guard.
 
-	   And that valid-side maximum is STRUCTURAL, not a sample high-water
-	   mark, which is what makes 64 safe rather than lucky. Measured over 84
-	   valid decodes the fabricated-bit count takes exactly three values --
-	   24, 32 and 40, i.e. 3, 4 and 5 bytes -- and nothing else, ever. The
-	   mechanism is the constructor's prefill: it pulls CODER_USE_BITS = 31
-	   bits before decoding starts, and 31 bits spans 4 byte-fetches, plus
-	   or minus one depending on where the last real byte falls relative to
-	   the byte boundary. 3 to 5 bytes is the whole range the coder can
-	   produce, so 40 is a ceiling and not a maximum-so-far. It moves only
-	   if CODER_USE_BITS moves.
+	   The valid-side maximum is 5 byte-fetches, 40 bits. Over 84 valid
+	   decodes this counter takes exactly three values -- 24, 32 and 40,
+	   i.e. 3, 4 and 5 bytes -- and nothing else. The discreteness is real:
+	   the counter advances a byte at a time, because that is how read_bit
+	   pulls.
+
+	   An earlier version of this comment called 40 STRUCTURAL and derived
+	   it: the prefill pulls CODER_USE_BITS = 31 bits, 31 bits spans four
+	   byte-fetches, plus or minus one for alignment. That derivation is
+	   FALSIFIED, and by measurement here rather than by argument. Counting
+	   the bits actually consumed past the end of the data, instead of the
+	   bytes fetched to supply them, gives a spread of 22 to 39 -- so a
+	   valid decode can need 39 bits past exhaustion, well above 31, and the
+	   premise the derivation rested on does not hold. Where the extra bits
+	   come from is not established; renormalisation is the obvious
+	   candidate and is not measured.
+
+	   So 40 is an observed maximum over 84 decodes and 102 archives, not a
+	   proven bound. Treat it as such: it is the strongest evidence
+	   available, it is corroborated by packJPG measuring the same three
+	   values from the same constant in a different codec, and it is still
+	   the kind of number that a wider corpus could in principle move.
 
 	   Corroboration from a sibling, which came out stronger than expected:
 	   packJPG measured its own distribution and got the SAME three values,
@@ -139,10 +151,13 @@ class aricoder
 
 	   Lowering does buy something. Choosing 48 over 44 is the asymmetry
 	   again -- a false positive refuses a good archive and is unacceptable,
-	   a false negative only leaves the previous behaviour -- so a whole
-	   spare byte over the ceiling is worth one extra escaping case. packJPG
-	   measured the same shape in its own coder and reached the same
-	   conclusion from the opposite starting point.
+	   a false negative only leaves the previous behaviour. The margin that
+	   buys, in the units this counter actually moves in: it is a strict
+	   >, so 48 tolerates a 6-byte fetch and rejects only at 7, against an
+	   observed valid maximum of 5. One spare fetch, and the observed
+	   maximum is empirical rather than proven, which is exactly why the
+	   spare one is kept. packJPG measured the same shape in its own coder
+	   and reached the same conclusion from the opposite starting point.
 
 	   Measured over the same 216 dense truncation points, v3.0e as the
 	   baseline and this check disabled in the middle row:
