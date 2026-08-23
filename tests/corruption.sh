@@ -223,6 +223,19 @@ sweep() { # $1 binary $2 label
 		# for the intact file is what exposed it. A control you have to
 		# remember to run separately is one you will eventually skip; a row
 		# inside the same table cannot be skipped.
+		#
+		# Verified against the failure it exists for, not just against its own
+		# reporting path: with the decode writing to one directory and this
+		# function reading another -- an ordinary path bug -- the run prints
+		#
+		#   cells=122  crash=0  hang=0  silently-wrong=0
+		#
+		# which is the BEST result this suite can produce, and the canary is the
+		# only thing that says otherwise. Inverting the canary's own comparison
+		# proves the reporting path works; it does not prove the canary catches
+		# a broken harness. Those are different claims and the first is much
+		# weaker -- @PJPG's fifteenth failure shape, a control that verifies the
+		# existence of an effect rather than its cause.
 		verdict=$( classify "$bin" "$arch" "$ref" ); verdict=${verdict%% *}
 		if [ "$verdict" != "ident" ]; then
 			g_canary="$g_canary $( basename "$f" )($verdict)"
