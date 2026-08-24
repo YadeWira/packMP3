@@ -430,6 +430,7 @@ sweep() { # $1 binary $2 label
 	# same-totals. @PJPG compared ten regression cells one by one and offered
 	# scale as the reason I had not; scale is not the reason, a digest is the
 	# same cost at 646 cells as at 10.
+	cp "$WORK/verdicts.txt" "$WORK/verdicts.$label.txt" 2>/dev/null
 	g_digest=$( sha256sum < "$WORK/verdicts.txt" | cut -c1-16 )
 	printf "  %-22s verdict digest: %s over %d cells\n" "" "$g_digest" "$g_cells"
 	printf "  %-22s timing: baseline=%dms  slow>%dms: %d (with output %d)  fast<%dms with output: %d  [%d..%dms]\n" \
@@ -581,6 +582,21 @@ if [ -n "$CONTROL" ] && [ -x "$CONTROL" ]; then
 	# A suite that cannot tell a fixed build from a broken one is not
 	# measuring anything. If an older build does not look worse, the
 	# harness is the thing that is wrong.
+	# Decompose BY CELL, not only by class. The totals beside the digest say
+	# which class moved; they cannot say which input. @PJPG prints the differing
+	# cells and pointed out the two decompositions are complementary and that
+	# neither of us had both -- theirs answers "which entry", mine "which
+	# class". A digest that changes with neither is a dead end.
+	ctl_label="control: $( basename "$CONTROL" )"
+	if [ -f "$WORK/verdicts.$( basename "$BIN" ).txt" ] && [ -f "$WORK/verdicts.$ctl_label.txt" ]; then
+		diff_n=$( paste "$WORK/verdicts.$( basename "$BIN" ).txt" "$WORK/verdicts.$ctl_label.txt" \
+			| awk '$1" "$2 != $3" "$4 {c++} END{print c+0}' )
+		if [ "$diff_n" -gt 0 ]; then
+			echo "  cells differing between the two builds: $diff_n"
+			paste "$WORK/verdicts.$( basename "$BIN" ).txt" "$WORK/verdicts.$ctl_label.txt" \
+				| awk '$1" "$2 != $3" "$4 { n++; if (n<=5) printf "    cell %d: current=%s/%s  control=%s/%s\n", NR, $1, $2, $3, $4 }'
+		fi
+	fi
 	if [ "$g_crash" -le "$new_crash" ] && [ "$g_wrong" -le "$new_wrong" ]; then
 		echo
 		echo "  CONTROL FAILED: the older build did not look worse than the current one."
