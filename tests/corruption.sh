@@ -247,6 +247,7 @@ sweep() { # $1 binary $2 label
 	local bin=$1 label=$2 f b arch ref full k pct seed verdict rc carch cback
 	g_crash=0; g_hang=0; g_wrong=0; g_cells=0
 	g_r1=0; g_r2=0; g_r3=0; g_r4=0; g_r6=0; g_unreadable=0; g_refused=0; g_rt_ok=0; g_r6_sig=0; g_r6_wrong=0
+	: > "$WORK/verdicts.txt"
 	g_slow=0; g_slow_out=0; g_maxms=0; g_minms=-1; g_fast_out=0; g_canary=""; g_books=""; g_skipped=0
 	for f in $SOURCES; do
 		b=$( basename "$f" )
@@ -293,7 +294,7 @@ sweep() { # $1 binary $2 label
 			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r1=$(( g_r1 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
-			note_time "$verdict"
+			note_time "$verdict"; printf "%s\n" "$verdict" >> "$WORK/verdicts.txt"
 		done
 
 		# REGIME 2: percentage of the file.
@@ -302,7 +303,7 @@ sweep() { # $1 binary $2 label
 			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r2=$(( g_r2 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
-			note_time "$verdict"
+			note_time "$verdict"; printf "%s\n" "$verdict" >> "$WORK/verdicts.txt"
 		done
 	done
 
@@ -320,12 +321,12 @@ sweep() { # $1 binary $2 label
 			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r3=$(( g_r3 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
-			note_time "$verdict"
+			note_time "$verdict"; printf "%s\n" "$verdict" >> "$WORK/verdicts.txt"
 			flip_file "$arch" "$WORK/d.pm3" $(( seed + 100000 )) 3 || { g_skipped=$(( g_skipped + 1 )); continue; }
 			verdict=$( classify "$bin" "$WORK/d.pm3" "$ref" ); g_ms=${verdict#* }; verdict=${verdict%% *}; g_cells=$(( g_cells + 1 )); g_r4=$(( g_r4 + 1 ))
 			case $verdict in crash) g_crash=$(( g_crash + 1 ));; hang) g_hang=$(( g_hang + 1 ));;
 				wrong) g_wrong=$(( g_wrong + 1 ));; esac
-			note_time "$verdict"
+			note_time "$verdict"; printf "%s\n" "$verdict" >> "$WORK/verdicts.txt"
 		done
 	fi
 	# REGIME 6: the INPUT side. Every regime above damages the .pm3 and
@@ -351,7 +352,7 @@ sweep() { # $1 binary $2 label
 		# Refused at compress: not a bug, but it still needs a bucket. An
 		# outcome with no counter is invisible, and the accounting check below
 		# is what makes that impossible rather than merely remembered.
-		[ -n "$carch" ] || { g_refused=$(( g_refused + 1 )); continue; }
+		[ -n "$carch" ] || { g_refused=$(( g_refused + 1 )); echo refused >> "$WORK/verdicts.txt"; continue; }
 		timeout "$TIMEOUT" "$bin" x -o -np -od"$WORK/ci/back" "$carch" >/dev/null 2>&1
 		rc=$?
 		if [ $rc -ge 128 ]; then g_crash=$(( g_crash + 1 )); g_r6_sig=$(( g_r6_sig + 1 )); continue; fi
@@ -365,10 +366,10 @@ sweep() { # $1 binary $2 label
 		# now, so the same cell moved from the worst class to a mild one while
 		# a single counter would have read it as two new silent failures.
 		if [ -z "$cback" ]; then
-			g_unreadable=$(( g_unreadable + 1 ))
+			g_unreadable=$(( g_unreadable + 1 )); echo unreadable >> "$WORK/verdicts.txt"
 		elif [ "$( sha256sum "$WORK/c.mp3" | cut -d" " -f1 )" != \
 		       "$( sha256sum "$WORK/ci/back/$cback" | cut -d" " -f1 )" ]; then
-			g_wrong=$(( g_wrong + 1 )); g_r6_wrong=$(( g_r6_wrong + 1 ))
+			g_wrong=$(( g_wrong + 1 )); g_r6_wrong=$(( g_r6_wrong + 1 )); echo r6wrong >> "$WORK/verdicts.txt"
 		else
 			# The success case needs a counter too. Two increments were missing
 			# here -- this one and the regime-local wrong count -- because two
@@ -376,7 +377,7 @@ sweep() { # $1 binary $2 label
 			# Thirteen of thirty cells landed in no bucket at all, and the
 			# accounting check below caught it on its first run, in the code
 			# written to implement the accounting check.
-			g_rt_ok=$(( g_rt_ok + 1 ))
+			g_rt_ok=$(( g_rt_ok + 1 )); echo rtok >> "$WORK/verdicts.txt"
 		fi
 	done
 
@@ -409,6 +410,14 @@ sweep() { # $1 binary $2 label
 	[ "$g_acct" -eq "$g_r6" ] || g_books=" input-side: $g_r6 cells but $g_acct accounted for"
 	[ -n "$g_canary" ] && printf "  %-22s CANARY FAILED:%s\n" "" "$g_canary"
 	[ "$g_skipped" -gt 0 ] && printf "  %-22s SKIPPED before counting: %d\n" "" "$g_skipped"
+	# PER-CELL DIGEST. The counts alone cannot see two cells swapping classes
+	# -- the totals stay identical. A digest of the verdict sequence is exact at
+	# any scale, so "the suite reproduces" can mean byte-for-byte instead of
+	# same-totals. @PJPG compared ten regression cells one by one and offered
+	# scale as the reason I had not; scale is not the reason, a digest is the
+	# same cost at 646 cells as at 10.
+	g_digest=$( sha256sum < "$WORK/verdicts.txt" | cut -c1-16 )
+	printf "  %-22s verdict digest: %s over %d cells\n" "" "$g_digest" "$g_cells"
 	printf "  %-22s timing: baseline=%dms  slow>%dms: %d (with output %d)  fast<%dms with output: %d  [%d..%dms]\n" \
 		"" "$BASE_MS" "$SLOW_MS" "$g_slow" "$g_slow_out" "$FAST_MS" "$g_fast_out" "$g_minms" "$g_maxms"
 	# An empty regime is a broken harness reporting a clean pass. This is not
