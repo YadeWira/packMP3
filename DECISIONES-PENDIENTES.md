@@ -11,7 +11,7 @@ una conversación. Cada punto trae el número que lo sostiene y lo que cuesta.
 
 ---
 
-## 1. Cortar la v3.0g — **decisión pendiente**
+## 1. Cortar la v3.0g — **EN ESPERA por decisión del 2026-08-25**
 
 Lo acumulado cierra **tres defectos de memoria que están vivos en la versión
 publicada**. Los tres se miden, los tres tienen repro determinista, y
@@ -41,17 +41,29 @@ viejas los leen igual.
 **Costo de no cortarla**: los tres defectos siguen vivos en lo que la gente
 descarga.
 
+**Estado**: en espera. Los commits están en `master` y pusheados; **no hay tag
+`v3.0g` ni release publicada**. No se hace nada hacia afuera hasta nueva orden.
+
 ---
 
 ## 2. Checksum o largo declarado en el formato — **decisión pendiente, más grande**
 
-Quedan **14 celdas** que decodifican a un MP3 incorrecto con exit 0 y
-sin ninguna señal. No es que las guardas fallen: son archivos truncados que
-resultan ser una **codificación válida de otro mp3**. Salida del tamaño
-exacto del original, bytes distintos. No hay nada inconsistente que ningún
+Quedan **14 celdas** que decodifican a un MP3 incorrecto con exit 0 y sin
+ninguna señal. No es que las guardas fallen: el archivo dañado es una
+**codificación válida de otro mp3**, así que no hay nada inconsistente que un
 chequeo interno pueda encontrar.
 
-Cerrarlo requiere que el contenedor declare un largo de payload o un checksum.
+**Corregido el 2026-08-25**: acá decía que eran "archivos truncados". Medido
+por régimen, **las 14 son de un solo bitflip, ninguna de truncación**. Eso
+cambia la conclusión: un **largo declarado cerraría cero de las 14**, porque un
+bit dado vuelta no cambia el largo. Solo un **checksum** las cierra.
+
+La clase de truncación también existe (16 de 72 celdas en un corpus más ancho)
+y esa sí la cierra un largo declarado — de hecho el contenedor chunked `MK` ya
+lo hace y da 0 donde `MS` da 1 o 2.
+
+**Diseño completo, con las dos clases medidas y las tres opciones**:
+[`DISENO-CHECKSUM.md`](DISENO-CHECKSUM.md).
 
 **Costo**: es un cambio de formato. Rompe compatibilidad hacia atrás, necesita
 un `appversion` nuevo, y los archivos viejos habría que seguir leyéndolos por
