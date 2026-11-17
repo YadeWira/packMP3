@@ -2669,6 +2669,7 @@ INTERN bool read_mp3( void )
 	if ( lastframe->n + 1 - n_bad_first < 5  ) {
 		snprintf( errormessage, MSG_SIZE, "corrupted file, compression not possible" );
 		errorlevel = 2;
+		free( mp3data ); // free the input copy on error
 		return false;
 	}
 	
@@ -2737,7 +2738,18 @@ INTERN bool write_mp3( void )
 	
 	// write physical frames
 	// main data has to be in order!
+	int main_data_left = main_data_size;
 	for ( frame = firstframe; frame != NULL; frame = frame->next ) {
+		/* A corrupt .pm3 can decode frame sizes whose main data adds up
+		   to more than the decoder produced; writing them read past the
+		   end of main_data (measured: heap overflow on one random bit flip). */
+		if ( ( frame->frame_size < frame->fixed_size ) ||
+			 ( frame->frame_size - frame->fixed_size > main_data_left ) ) {
+			snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (frame sizes)" );
+			errorlevel = 2;
+			return false;
+		}
+		main_data_left -= frame->frame_size - frame->fixed_size;
 		fixed = mp3_build_fixed( frame );
 		str_out->write( fixed, 1, frame->fixed_size );
 		str_out->write( data, 1, frame->frame_size - frame->fixed_size );
@@ -3018,34 +3030,34 @@ INTERN bool compress_mp3( void )
 
 	// frame header data
 	if ( i_padding != 0 ) // padding bits
-		if ( !pmp_encode_padding( encoder ) ) return false;
+		if ( !pmp_encode_padding( encoder ) ) { delete( encoder ); return false; }
 	if ( i_sblocks != 0 ) // special block types
-		if ( !pmp_encode_block_types( encoder ) ) return false;
+		if ( !pmp_encode_block_types( encoder ) ) { delete( encoder ); return false; }
 	// global gain
-	if ( !pmp_encode_global_gain( encoder ) ) return false;
+	if ( !pmp_encode_global_gain( encoder ) ) { delete( encoder ); return false; }
 	// build context from global gain
-	if ( !pmp_build_context() ) return false;
+	if ( !pmp_build_context() ) { delete( encoder ); return false; }
 	// slength
-	if ( !pmp_encode_slength( encoder ) ) return false;
+	if ( !pmp_encode_slength( encoder ) ) { delete( encoder ); return false; }
 	/*
 	// region sizes
 	if ( !pmp_encode_region_bounds( encoder ) ) return false;
 	// huffman table selections
 	if ( !pmp_encode_htable_selection( encoder ) ) return false;
 	*/
-	if ( !pmp_encode_region_data( encoder ) ) return false;
+	if ( !pmp_encode_region_data( encoder ) ) { delete( encoder ); return false; }
 	if ( i_share != 0 ) // scalefactor sharing
-		if ( !pmp_encode_sharing( encoder ) ) return false;
+		if ( !pmp_encode_sharing( encoder ) ) { delete( encoder ); return false; }
 	if ( i_preemphasis != 0 ) // preemphasis
-		if ( !pmp_encode_preemphasis( encoder ) ) return false;
+		if ( !pmp_encode_preemphasis( encoder ) ) { delete( encoder ); return false; }
 	if ( i_coarse != 0 ) // coarse setting
-		if ( !pmp_encode_coarse_sf( encoder ) ) return false;
+		if ( !pmp_encode_coarse_sf( encoder ) ) { delete( encoder ); return false; }
 	if ( i_sbgain != 0 ) // subblock gain
-		if ( !pmp_encode_subblock_gain( encoder ) ) return false;
+		if ( !pmp_encode_subblock_gain( encoder ) ) { delete( encoder ); return false; }
 	if ( i_stereo_ms != 0 ) // ms stereo settings
-		if ( !pmp_encode_stereo_ms( encoder ) ) return false;
+		if ( !pmp_encode_stereo_ms( encoder ) ) { delete( encoder ); return false; }
 	// main data
-	if ( !pmp_encode_main_data( encoder ) ) return false;
+	if ( !pmp_encode_main_data( encoder ) ) { delete( encoder ); return false; }
 	
 	// finalize arithmetic compression
 	delete( encoder );
@@ -3156,44 +3168,44 @@ INTERN bool uncompress_pmp( void )
 	#if !defined( STORE_ID3 )
 	// id3 tags / other tags / garbage
 	if ( ( data_before_size > 0 ) || ( data_after_size > 0 ) )
-		if ( !pmp_decode_id3( decoder ) ) return false;
+		if ( !pmp_decode_id3( decoder ) ) { delete( decoder ); return false; }
 	#if !defined(BUILD_LIB)
 	// splice the original JPEG back in, undoing apic_try_recompress
 	if ( apic_present )
-		if ( !apic_reconstruct() ) return false;
+		if ( !apic_reconstruct() ) { delete( decoder ); return false; }
 	#endif
 	#endif
 
 	// frame header data
 	if ( i_padding != 0 ) // padding bits
-		if ( !pmp_decode_padding( decoder ) ) return false;
+		if ( !pmp_decode_padding( decoder ) ) { delete( decoder ); return false; }
 	if ( i_sblocks != 0 ) // special block types
-		if ( !pmp_decode_block_types( decoder ) ) return false;
+		if ( !pmp_decode_block_types( decoder ) ) { delete( decoder ); return false; }
 	// global gain
-	if ( !pmp_decode_global_gain( decoder ) ) return false;
+	if ( !pmp_decode_global_gain( decoder ) ) { delete( decoder ); return false; }
 	// build context from global gain
-	if ( !pmp_build_context() ) return false;
+	if ( !pmp_build_context() ) { delete( decoder ); return false; }
 	// slength
-	if ( !pmp_decode_slength( decoder ) ) return false;
+	if ( !pmp_decode_slength( decoder ) ) { delete( decoder ); return false; }
 	/*
 	// region sizes
 	if ( !pmp_decode_region_bounds( decoder ) ) return false;
 	// huffman table selections
 	if ( !pmp_decode_htable_selection( decoder ) ) return false;
 	*/
-	if ( !pmp_decode_region_data( decoder ) ) return false;
+	if ( !pmp_decode_region_data( decoder ) ) { delete( decoder ); return false; }
 	if ( i_share != 0 ) // scalefactor sharing
-		if ( !pmp_decode_sharing( decoder ) ) return false;
+		if ( !pmp_decode_sharing( decoder ) ) { delete( decoder ); return false; }
 	if ( i_preemphasis != 0 ) // preemphasis
-		if ( !pmp_decode_preemphasis( decoder ) ) return false;
+		if ( !pmp_decode_preemphasis( decoder ) ) { delete( decoder ); return false; }
 	if ( i_coarse != 0 ) // coarse setting
-		if ( !pmp_decode_coarse_sf( decoder ) ) return false;
+		if ( !pmp_decode_coarse_sf( decoder ) ) { delete( decoder ); return false; }
 	if ( i_sbgain != 0 ) // subblock gain
-		if ( !pmp_decode_subblock_gain( decoder ) ) return false;
+		if ( !pmp_decode_subblock_gain( decoder ) ) { delete( decoder ); return false; }
 	if ( i_stereo_ms != 0 ) // ms stereo settings
-		if ( !pmp_decode_stereo_ms( decoder ) ) return false;
+		if ( !pmp_decode_stereo_ms( decoder ) ) { delete( decoder ); return false; }
 	// main data
-	if ( !pmp_decode_main_data( decoder ) ) return false;
+	if ( !pmp_decode_main_data( decoder ) ) { delete( decoder ); return false; }
 
 	/* The single point where a decode that ran on invalid input is refused.
 	   Every stage above can complete "successfully" on a truncated archive,
@@ -5482,6 +5494,14 @@ INTERN inline bool pmp_decode_padding( aricoder* dec )
 	// ... and all others
 	for ( mp3Frame* frame = firstframe; frame != NULL; frame = frame->next ) {
 		while ( run == 0 ) {
+			/* An exhausted arithmetic coder decodes 0 forever, so on a truncated
+			   .pm3 this loop never ended. */
+			if ( dec->is_corrupt() ) {
+				delete( model );
+				snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (padding)" );
+				errorlevel = 2;
+				return false;
+			}
 			bit ^= 0x1;
 			run = decode_ari( dec, model );
 			model->shift_context( run );			
@@ -5609,6 +5629,15 @@ INTERN inline bool pmp_decode_block_types( aricoder* dec )
 		// ... and all others
 		for ( bit = 0, granule0 = firstframe->granules[ch][0]; granule0 != NULL; granule0 = granule0->next ) {
 			while ( run == 0 ) {
+				/* An exhausted arithmetic coder decodes 0 forever, so on a truncated
+				   .pm3 this loop never ended. */
+				if ( dec->is_corrupt() ) {
+					delete( mod_sw );
+					delete( mod_bt );
+					snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (block types)" );
+					errorlevel = 2;
+					return false;
+				}
 				bit ^= 0x1;
 				run = decode_ari( dec, mod_sw );
 				mod_sw->shift_context( run );			
@@ -5946,6 +5975,8 @@ INTERN inline bool pmp_encode_region_data( aricoder* enc )
 			if ( granule->big_val_pairs > 576 / 2 ) {
 				snprintf( errormessage, MSG_SIZE, "big value pairs out of bounds (%ch>%ch)", granule->big_val_pairs, 576 / 2 );
 				errorlevel = 2;
+				delete( mod_t0 ); delete( mod_t1 ); delete( mod_t2 ); delete( mod_ts );
+				delete( mod_s0 ); delete( mod_s1 ); delete( mod_bv );
 				return false;
 			}
 			if ( granule->window_switching ) {
@@ -6085,6 +6116,8 @@ INTERN inline bool pmp_decode_region_data( aricoder* dec )
 					snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (region sizes %i/%i)",
 						s_r0, (int) granule->region1_size );
 					errorlevel = 2;
+					delete( mod_t0 ); delete( mod_t1 ); delete( mod_t2 ); delete( mod_ts );
+					delete( mod_s0 ); delete( mod_s1 ); delete( mod_bv );
 					return false;
 				}
 				// set region 1/2 bounds
@@ -6234,6 +6267,15 @@ INTERN inline bool pmp_decode_sharing( aricoder* dec )
 		c = 0;
 		// decode one channel
 		for ( granule = firstframe->granules[ch][0]; granule != NULL; granule = granule->next->next ) {
+			/* MPEG-1 frames hold two granules per channel, so a valid stream never ends this
+			   chain on an odd granule. A corrupt one did and dereferenced the
+			   NULL second granule; measured on a single-bit flip of a .pm3. */
+			if ( granule->next == NULL ) {
+				delete( model );
+				snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (scalefactor sharing)" );
+				errorlevel = 2;
+				return false;
+			}
 			shift_model( model, c, granule->slength, granule->next->slength );
 			c = decode_ari( dec, model );
 			granule->share = c;
@@ -6491,6 +6533,7 @@ INTERN inline bool pmp_decode_subblock_gain( aricoder* dec )
 	----------------------------------------------- */
 INTERN inline bool pmp_encode_main_data( aricoder* enc )
 {
+	bool pmp_ok = true; // result for the shared cleanup
 	// main data:
 	// consists of scalefactors & coefficients
 	// several other data is also encoded here:
@@ -6703,7 +6746,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 			 ( lbt_c[ch] == NULL ) ) {
 			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
-			return false;
+			{ pmp_ok = false; goto pmp_cleanup; }
 		}
 	}
 	
@@ -6836,7 +6879,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 				if ( huffman->get_count() > lmaxp ) { // main data not big enough - no rollback for scfs
 					snprintf( errormessage, MSG_SIZE, "huffman decoding error (in frame #%i)", frame->n );
 					errorlevel = 2;
-					return false;
+					{ pmp_ok = false; goto pmp_cleanup; }
 				}
 				
 				
@@ -6854,7 +6897,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 						snprintf( errormessage, MSG_SIZE, "bad huffman table (%i) used (in frame #%i)",
 							region_tables[ r ], frame->n );
 						errorlevel = 2;
-						return false;
+						{ pmp_ok = false; goto pmp_cleanup; }
 					}
 					conv_set = bv_table->h;
 					linbits = bv_table->linbits;
@@ -7122,7 +7165,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 			snprintf( errormessage, MSG_SIZE, "corrupt mp3: ancillary size %i in frame #%i",
 				n, frame->n );
 			errorlevel = 2;
-			return false;
+			{ pmp_ok = false; goto pmp_cleanup; }
 		}
 		// locally store padding and aux data
 		for ( pna_c = pad_and_aux, i = n; i >= 8; i -= 8 )
@@ -7160,6 +7203,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	
 	// ---> AFTER ENCODING: CLEAN UP <---
 	
+	pmp_cleanup: // error returns above free here too
 	// --- CLEAN UP: MODELS AND HUFFMAN CODER ---
 	delete( huffman );
 	delete( mod_svb );
@@ -7209,7 +7253,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	}
 	
 	
-	return true;
+	return pmp_ok;
 }
 
 
@@ -7218,6 +7262,7 @@ INTERN inline bool pmp_encode_main_data( aricoder* enc )
 	----------------------------------------------- */
 INTERN inline bool pmp_decode_main_data( aricoder* dec )
 {
+	bool pmp_ok = true; // result for the shared cleanup
 	// context / storage
 	static thread_local unsigned char* pad_and_aux= ( unsigned char* ) calloc( LAME_ANC_BUF_SIZE, 1 );
 	mp3Frame* frame;
@@ -7393,7 +7438,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 			 ( lbt_c[ch] == NULL ) ) {
 			snprintf( errormessage, MSG_SIZE, MEM_ERRMSG );
 			errorlevel = 2;
-			return false;
+			{ pmp_ok = false; goto pmp_cleanup; }
 		}
 	}	
 	
@@ -7410,7 +7455,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 		if ( dec->is_corrupt() ) {
 			snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (main data)" );
 			errorlevel = 2;
-			return false;
+			{ pmp_ok = false; goto pmp_cleanup; }
 		}
 		// record main index
 		frame->main_index = huffman->getpos();
@@ -7608,7 +7653,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 						snprintf( errormessage, MSG_SIZE, "bad huffman table (%i) used (in frame #%i)",
 							region_tables[ r ], frame->n );
 						errorlevel = 2;
-						return false;
+						{ pmp_ok = false; goto pmp_cleanup; }
 					}
 					mod_lnc = mod_len[ch][linbits];
 					
@@ -7651,14 +7696,14 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 					snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (sv_bound %i in frame #%i)",
 						granule->sv_bound, frame->n );
 					errorlevel = 2;
-					return false;
+					{ pmp_ok = false; goto pmp_cleanup; }
 				}
 				for ( r = 0; r < 3; r++ ) {
 					if ( ( region_bounds[ r ] < 0 ) || ( region_bounds[ r ] > COEF_MAX_POS ) ) {
 						snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (region bound %i in frame #%i)",
 							region_bounds[ r ], frame->n );
 						errorlevel = 2;
-						return false;
+						{ pmp_ok = false; goto pmp_cleanup; }
 					}
 				}
 
@@ -7672,7 +7717,17 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 					bv_table = bv_enc_table + region_tables[ r ];
 					hcodes = bv_table->h;
 					linbits = bv_table->linbits;
-					
+					/* Tables 4 and 14 are "not used" and have no codes (h == NULL). The decode
+					   guard above runs only for regions its loop visits, so a
+					   corrupt stream selecting such a table reached encode_pair
+					   with NULL codes; measured on a single-bit flip of a .pm3. */
+					if ( hcodes == NULL && p < region_bounds[ r ] ) {
+						snprintf( errormessage, MSG_SIZE, "bad huffman table (%i) used (in frame #%i)",
+							region_tables[ r ], frame->n );
+						errorlevel = 2;
+						{ pmp_ok = false; goto pmp_cleanup; }
+					}
+
 					// encoding with/without linbits
 					while ( p < region_bounds[ r ] ) {
 						/* The two coefficients index this table directly, and each
@@ -7697,7 +7752,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 						if ( abs[ p ] > bv_table->max || abs[ p + 1 ] > bv_table->max ) {
 							snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (coefficients)" );
 							errorlevel = 2;
-							return false;
+							{ pmp_ok = false; goto pmp_cleanup; }
 						}
 						huffman->encode_pair( hcodes, abs + p );
 						for ( i = 0; i < 2; i++, p++ ) if ( abs[p] > 0 ) {
@@ -7869,7 +7924,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 			snprintf( errormessage, MSG_SIZE, "truncated or corrupt pm3 stream (ancillary size %i in frame #%i)",
 				n, frame->n );
 			errorlevel = 2;
-			return false;
+			{ pmp_ok = false; goto pmp_cleanup; }
 		}
 		// check if data can be predicted 100%
 		if ( decode_ari( dec, mod_pap ) == 1 ) {
@@ -7891,7 +7946,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 			if ( pmp_predict_lame_anc( n, pad_and_aux ) == NULL ) {
 				snprintf( errormessage, MSG_SIZE, "ancilary prediction error, please report" );
 				errorlevel = 2;
-				return false;
+				{ pmp_ok = false; goto pmp_cleanup; }
 			}
 		}
 		// decode padding bits
@@ -7923,6 +7978,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 		main_data_size +
 		( g_nframes * lastframe->fixed_size );
 	
+	pmp_cleanup: // error returns above free here too
 	// --- CLEAN UP: MODELS AND HUFFMAN CODER ---
 	delete( huffman );
 	delete( mod_svb );
@@ -7972,7 +8028,7 @@ INTERN inline bool pmp_decode_main_data( aricoder* dec )
 	}
 	
 	
-	return true;
+	return pmp_ok;
 }
 
 
